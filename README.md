@@ -51,7 +51,6 @@ To add a feature, create a module in `src/main/features/`, register it in `featu
 
 ## Features
 
-- Tabs, address bar, back/forward, zoom, session restore, right-click "Add to targets"
 - Overview: energy/nerve/happy/life, cooldowns, travel, refills, unread events/messages, quick links
 - Chain: timer with beeps at 2:30/1:30/1:00/0:30, top hitters, your rank, online members
 - Targets: status and hospital timers, attack links, auto refresh
@@ -69,9 +68,3 @@ To add a feature, create a module in `src/main/features/`, register it in `featu
 
 Data sources: api.torn.com, and YATA's public abroad-stock export (no key sent). Price and
 stock history is recorded locally (`history.json`, `travel-history.json`) to build trends.
-
-## Roadmap ideas
-
-- Custom timer alerts ("X minutes before" any timer)
-- Target finder: FFScouter fair-fight estimates and target lists
-- War: ranked war overview, enemy status board
