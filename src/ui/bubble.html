@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'none'">
+  <title>Torn Chat</title>
+  <link rel="stylesheet" href="themes.css">
+  <style>
+    html, body { margin: 0; width: 100%; height: 100%; background: transparent; overflow: hidden; user-select: none; font-family: "Segoe UI", system-ui, sans-serif; }
+    #bubble {
+      position: absolute; left: 8px; top: 8px; width: 56px; height: 56px; border-radius: 50%;
+      background: var(--bg-3); border: 2px solid var(--accent-2); box-sizing: border-box;
+      display: flex; align-items: center; justify-content: center; cursor: pointer;
+      box-shadow: 0 3px 10px rgba(0, 0, 0, .55);
+      transition: transform .12s ease, border-color .2s ease;
+    }
+    #bubble:hover { transform: scale(1.06); }
+    #bubble svg { width: 28px; height: 28px; fill: var(--text); pointer-events: none; }
+    /* Chat window showing: filled with the accent colour (click hides it). */
+    #bubble.showing { background: var(--accent-2); border-color: var(--accent); }
+    #bubble.showing svg { fill: var(--on-accent); }
+    #bubble.unread { border-color: var(--orange); animation: pulse 1.6s ease-in-out infinite; }
+    #bubble.unread svg { fill: var(--text); }
+    #badge {
+      position: absolute; right: 2px; top: 2px; min-width: 22px; height: 22px; padding: 0 6px; box-sizing: border-box;
+      border-radius: 11px; background: var(--red); color: #fff; font-size: 12px; font-weight: 700; line-height: 22px; text-align: center;
+      border: 2px solid var(--bg); pointer-events: none;
+    }
+    #badge[hidden] { display: none; }
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 3px 10px rgba(0, 0, 0, .55), 0 0 0 0 rgba(232, 145, 45, .55); }
+      50% { box-shadow: 0 3px 10px rgba(0, 0, 0, .55), 0 0 0 7px rgba(232, 145, 45, 0); }
+    }
+    @media (prefers-reduced-motion: reduce) { #bubble.unread { animation: none; } }
+  </style>
+</head>
+<body>
+  <div id="bubble" title="Torn chat: click to open, drag to move, right-click for options">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-5 4v-4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm3 6.5a1.5 1.5 0 1 0 0 .01zm5 0a1.5 1.5 0 1 0 0 .01zm5 0a1.5 1.5 0 1 0 0 .01z"/></svg>
+  </div>
+  <div id="badge" hidden></div>
+  <script src="bubble-ui.js"></script>
+</body>
+</html>

@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'none'">
+  <title>Mentat alert</title>
+  <link rel="stylesheet" href="themes.css">
+  <style>
+    html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; user-select: none; font: 13px "Segoe UI", system-ui, sans-serif; color: var(--text); }
+    #card {
+      position: absolute; inset: 4px; box-sizing: border-box; display: flex; gap: 10px; padding: 10px 10px 10px 12px;
+      background: var(--bg-2); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 8px;
+      box-shadow: 0 6px 18px var(--shadow); cursor: default;
+      animation: in .18s ease-out;
+    }
+    #card.clickable { cursor: pointer; }
+    #card:hover { border-color: var(--bg-4); border-left-color: var(--accent); }
+    .icon { flex: none; width: 30px; height: 30px; border-radius: 50%; background: color-mix(in srgb, var(--accent) 20%, var(--bg-2)); display: flex; align-items: center; justify-content: center; margin-top: 2px; }
+    .icon svg { width: 17px; height: 17px; fill: var(--accent); }
+    .text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+    .app { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+    #title { font-size: 14px; font-weight: 600; color: var(--text); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #body { color: color-mix(in srgb, var(--text) 78%, var(--muted)); margin-top: 2px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.3; }
+    .side { flex: none; display: flex; flex-direction: column; align-items: flex-end; justify-content: space-between; }
+    button { font: inherit; color: var(--text); background: var(--bg-3); border: 1px solid var(--line); border-radius: 4px; cursor: pointer; }
+    button:hover { background: var(--bg-4); }
+    #close { border: none; background: none; color: var(--muted); font-size: 16px; line-height: 1; padding: 0 3px; }
+    #close:hover { color: var(--text); background: none; }
+    #open { padding: 3px 12px; background: var(--accent-2); border-color: var(--accent); color: var(--on-accent); }
+    #open:hover { background: var(--accent); }
+    #open[hidden] { display: none; }
+    #bar { position: absolute; left: 4px; bottom: 0; height: 3px; background: var(--accent); border-radius: 0 0 0 8px; opacity: .55; }
+    @keyframes in { from { transform: translateY(10px); opacity: 0; } to { transform: none; opacity: 1; } }
+    @keyframes drain { from { width: calc(100% - 8px); } to { width: 0; } }
+    @media (prefers-reduced-motion: reduce) { #card { animation: none; } #bar { display: none; } }
+  </style>
+</head>
+<body>
+  <div id="card">
+    <div class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a7 7 0 0 0-7 7v4.3L3.3 16a1 1 0 0 0 .9 1.5h15.6a1 1 0 0 0 .9-1.5L19 13.3V9a7 7 0 0 0-7-7zm0 21a3 3 0 0 0 3-3H9a3 3 0 0 0 3 3z"/></svg></div>
+    <div class="text">
+      <span class="app">Mentat</span>
+      <span id="title"></span>
+      <span id="body"></span>
+    </div>
+    <div class="side">
+      <button id="close" title="Close">&times;</button>
+      <button id="open" hidden>Open</button>
+    </div>
+    <div id="bar"></div>
+  </div>
+  <script src="popup-ui.js"></script>
+</body>
+</html>

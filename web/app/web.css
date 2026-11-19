@@ -1,0 +1,115 @@
+/* Mentat as a web app and phone app: what differs from the Windows app's tools page.
+   html.web     any browser (set by host.js)
+   html.phone   a phone (or a narrow window)
+   html.standalone   installed to the home screen */
+
+/* ---- Only the Windows app has these ---- */
+.web #btn-chat,
+.web #set-chat, .web [data-set-jump="chat"],
+.web h3:has(+ #ext-box), .web #ext-box,
+.web h3:has(+ #updates-box), .web #updates-box, .web .setting:has([data-set="updates.auto"]),
+.web h3:has(+ .setting [data-set="ui.closeToTray"]),
+.web .setting:has([data-set="ui.closeToTray"]), .web .setting:has([data-set="ui.openTornOnStart"]),
+.web .setting:has([data-set="popouts.minimizeToBubble"]), .web .setting:has([data-set="ui.browserClocks"]),
+.web .setting:has([data-sync-mode]), .web #sync-form,
+.web .wel-more:has(#wel-url), .web label:has([data-set="ui.buttons.chat"]) { display: none !important; }
+.web-only { display: none; }
+.web .desktop-only { display: none !important; }
+.web .web-only { display: block; }
+.web .web-only.row { display: flex; }
+.web #btn-torn { white-space: nowrap; }
+
+/* ---- Pages menu (the Windows app shows a native menu) ---- */
+#pages-menu { position: fixed; z-index: 1500; max-height: min(70vh, 560px); overflow-y: auto; min-width: 210px; padding: 4px;
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 10px 28px var(--shadow); display: flex; flex-direction: column; }
+#pages-menu .pm-group { padding: 8px 10px 2px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+#pages-menu button { text-align: left; border: none; background: none; color: var(--text); padding: 8px 12px; border-radius: 5px; }
+#pages-menu button:hover, #pages-menu button:focus-visible { background: var(--bg-3); }
+
+/* ---- Phones ---- */
+.phone body { -webkit-text-size-adjust: 100%; }
+.phone input, .phone select, .phone textarea { font-size: 16px; } /* no zoom-in on focus (iOS) */
+.phone body.tool #toolbar { padding: 0 10px; padding-top: env(safe-area-inset-top); gap: 6px; min-height: 48px; }
+.phone body.tool .brand { margin-right: 2px; }
+.phone #clocks .clock:not(.tct) { display: none; }
+.phone #clocks .clock-label { display: none; }
+.phone #btn-torn, .phone #btn-pages { padding: 6px 10px; }
+
+/* The tab bar along the bottom: the first four tabs (in your order) and More. */
+.phone body.tool #panel-nav {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 900; display: flex; overflow: visible;
+  background: var(--chrome); border-top: 1px solid var(--line); padding: 0 4px env(safe-area-inset-bottom);
+}
+.phone body.tool #panel-nav > button { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 3px;
+  padding: 8px 2px 7px; font-size: 10.5px; border: none; border-top: 2px solid transparent; border-radius: 0; background: none; color: var(--muted); }
+.phone body.tool #panel-nav > button .nav-icon { display: block; width: 21px; height: 21px; fill: currentColor; }
+.phone body.tool #panel-nav > button .nav-label { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.phone body.tool #panel-nav > button.active { color: var(--text); border-top-color: var(--accent); }
+.phone body.tool #panel-nav > button.active .nav-icon { fill: var(--accent); }
+.phone body.tool #panel-nav > button[data-panel]:nth-of-type(n+5) { display: none; }
+.phone body.tool #panel-nav .nav-chev, .phone body.tool #panel-nav .nav-subs { display: none; }
+.phone #panels { padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
+.phone #api-footer { display: none; }
+.phone #sidebar { display: none !important; }
+.phone body.tool #panels > section { padding: 10px 10px 18px; }
+.nav-more { display: none; }
+.phone .nav-more { display: flex !important; }
+.phone .nav-more.has-active { color: var(--text) !important; border-top-color: var(--accent) !important; }
+
+/* "More": every tab, in your order, as a sheet above the bar. */
+#nav-sheet { position: fixed; left: 0; right: 0; bottom: calc(58px + env(safe-area-inset-bottom)); z-index: 950; max-height: 70vh; overflow-y: auto;
+  background: var(--bg-2); border-top: 1px solid var(--line); border-radius: 14px 14px 0 0; box-shadow: 0 -10px 30px var(--shadow);
+  padding: 8px 8px 12px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+#nav-sheet[hidden] { display: none; }
+#nav-sheet button { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 12px 4px; border-radius: 10px; border: 1px solid var(--line);
+  background: var(--bg-3); color: var(--text); font-size: 12.5px; }
+#nav-sheet button.active { border-color: var(--accent); }
+#nav-sheet svg { width: 22px; height: 22px; fill: var(--accent); }
+#nav-sheet .sheet-title { grid-column: 1 / -1; padding: 4px 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+#nav-scrim { position: fixed; inset: 0; z-index: 940; background: rgba(0, 0, 0, .35); }
+#nav-scrim[hidden] { display: none; }
+
+/* Wide tables scroll sideways inside their box instead of the page. */
+.phone .table-wrap, .phone table.data { max-width: 100%; }
+.phone .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.phone section > table.data { display: block; overflow-x: auto; }
+.phone .toolbar { flex-wrap: wrap; }
+.phone .grid3, .phone .grid4 { grid-template-columns: 1fr 1fr; }
+.phone .setting { flex-wrap: wrap; gap: 8px; }
+/* Settings with a menu, button or text box: the label above, the control below at full width. */
+.phone .setting:has(> select), .phone .setting:has(> button), .phone .setting:has(> a), .phone .setting:has(> span.row), .phone .setting:has(> input[type="text"]), .phone .setting:has(> input[type="number"]) { flex-direction: column; align-items: stretch; }
+.phone .setting:has(> select) > select, .phone .setting > input[type="text"] { width: 100% !important; }
+.phone .setting > label { max-width: none; }
+.phone #update-bar, .phone #tour-offer { left: 10px; right: 10px; transform: none; max-width: none; bottom: calc(70px + env(safe-area-inset-bottom)); top: auto; }
+.phone .toast { bottom: calc(74px + env(safe-area-inset-bottom)); }
+.phone #welcome { padding-top: max(24px, env(safe-area-inset-top)); }
+
+/* Install guide (Settings → This device) */
+.install-steps { margin: 6px 0 0; padding-left: 20px; }
+.install-steps li { margin: 4px 0; }
+
+/* Phone alert choices only show while alerts are on (.checks would otherwise override hidden). */
+#push-prefs[hidden], #push-actions[hidden] { display: none !important; }
+
+/* ---- Install Mentat (phones, not yet installed): a sheet from the bottom, in the sign-in screen's sand gold ---- */
+#install-sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 2200; padding: 0 10px calc(10px + env(safe-area-inset-bottom)); animation: ins-up .28s ease-out; }
+#install-sheet .ins-card { max-width: 520px; margin: 0 auto; padding: 16px 16px 12px; border-radius: 16px; color: #f3e7d6; background: #1f1912;
+  border: 1px solid rgba(222, 188, 160, .3); box-shadow: 0 -8px 40px rgba(0, 0, 0, .55), 0 0 0 1px rgba(0, 0, 0, .3); font-size: 14.5px; line-height: 1.45; }
+.ins-head { display: flex; gap: 12px; align-items: center; }
+.ins-head img { width: 48px; height: 48px; border-radius: 12px; flex: none; }
+.ins-head b { font-size: 16.5px; color: #f8debd; }
+.ins-sub { color: #b9a68d; font-size: 13px; }
+.ins-why { margin: 12px 0 6px; padding-left: 18px; }
+.ins-why li { margin: 5px 0; }
+.ins-why b { color: #debca0; }
+.ins-note { margin: 8px 0; padding: 8px 10px; border-radius: 8px; background: #2c2218; color: #f3e7d6; font-size: 13.5px; }
+.ins-steps { margin: 8px 0; padding-left: 20px; }
+.ins-steps li { margin: 6px 0; }
+.ins-share { width: 18px; height: 18px; fill: #4ea1e8; vertical-align: -3px; }
+.ins-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.ins-actions button { flex: 1 1 auto; padding: 11px 12px; border-radius: 10px; font-size: 15px; background: #2a2219; color: #f3e7d6; border: 1px solid #4d3e2d; }
+.ins-actions button.primary { flex-basis: 100%; background: #cba580; border-color: #debca0; color: #241a0f; font-weight: 600; }
+.ins-actions .ins-never { flex: 0 0 auto; background: none; border: none; color: #b9a68d; text-decoration: underline; padding: 11px 6px; }
+.ins-actions [hidden], .ins-how[hidden] { display: none !important; }
+@keyframes ins-up { from { transform: translateY(40px); opacity: 0; } to { transform: none; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { #install-sheet { animation: none; } }

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Opening Torn PDA</title>
+<!-- iPhone hand-off: the installed web app opens Torn PDA links in iOS's in-app browser sheet, which
+     stayed blank after passing the link to PDA. This page fills that sheet instead: it opens PDA,
+     tries to close itself when you come back, and otherwise says how to get back to Mentat. -->
+<style>
+  :root { --bg: #17120d; --text: #f6f1e9; --muted: #c4b8a8; --accent: #debca0; --line: #4a3c30; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 16px/1.5 -apple-system, system-ui, "Segoe UI", Roboto, sans-serif; }
+  main { min-height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 32px 24px; box-sizing: border-box; gap: 14px; }
+  h1 { font-size: 20px; margin: 0; }
+  p { margin: 0; color: var(--muted); max-width: 22em; }
+  a.btn { display: inline-block; padding: 12px 18px; border-radius: 10px; border: 1px solid var(--line); color: var(--text); text-decoration: none; min-width: 12em; }
+  a.btn.primary { background: var(--accent); border-color: var(--accent); color: #17120d; font-weight: 600; }
+  .when-back { display: none; }
+  body.back .when-back { display: block; }
+  body.back .when-opening { display: none; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1 class="when-opening">Opening Torn PDA…</h1>
+  <h1 class="when-back">Back from Torn PDA</h1>
+  <p class="when-back">Tap <b>✕</b> at the top left to go back to Mentat.</p>
+  <p class="when-opening">If nothing happens, tap the button below.</p>
+  <a class="btn primary" id="again" href="#">Open in Torn PDA</a>
+  <a class="btn" id="web" href="#">Open in this browser instead</a>
+</main>
+<script src="pda.js"></script>
+</body>
+</html>

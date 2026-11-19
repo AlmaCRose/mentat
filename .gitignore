@@ -1,0 +1,5 @@
+node_modules/
+dist/
+screenshots/
+# Your own Mentat server address (see mentat.local.example.json)
+mentat.local.json

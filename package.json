@@ -1,0 +1,52 @@
+{
+  "name": "mentat",
+  "productName": "Mentat",
+  "version": "0.1.22",
+  "description": "Mentat: a free desktop browser for Torn with built-in features that use only the official Torn API.",
+  "main": "src/main/main.js",
+  "private": true,
+  "mentat": {
+    "server": ""
+  },
+  "scripts": {
+    "start": "node scripts/start.js",
+    "check": "node scripts/check.js",
+    "pack": "node scripts/dist.js --dir",
+    "dist": "node scripts/dist.js",
+    "pack-server": "node scripts/pack-server.js",
+    "server": "node server/server.js"
+  },
+  "build": {
+    "appId": "com.mentat.app",
+    "productName": "Mentat",
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "icon": "src/assets/mentat.ico",
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "Mentat-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-portable.${ext}"
+    }
+  },
+  "devDependencies": {
+    "electron": "^45.3.3",
+    "electron-builder": "^26.18.0"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11"
+  }
+}

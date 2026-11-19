@@ -1,0 +1,36 @@
+# Mentat sync server as a sandboxed systemd service.
+#   /opt/torn-desktop                  the app folder (server/ and src/main/ are enough)
+#   /etc/torn-desktop/config.json      settings only, no secrets (root, 644: the service user reads it)
+#   /etc/torn-desktop/torn_key         Torn API key (root, 600)
+#   /etc/torn-desktop/token            access token (root, 600)
+# Data lands in /var/lib/torn-desktop (config: "dataDir": "/var/lib/torn-desktop").
+# systemd reads the root-only key and token files and hands them to the service.
+[Unit]
+Description=Mentat sync server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/node /opt/torn-desktop/server/server.js --config /etc/torn-desktop/config.json
+LoadCredential=torn_key:/etc/torn-desktop/torn_key
+LoadCredential=token:/etc/torn-desktop/token
+DynamicUser=yes
+StateDirectory=torn-desktop
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

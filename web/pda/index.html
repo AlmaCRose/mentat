@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Mentat bubbles for Torn PDA</title>
+  <meta name="description" content="Add Mentat's floating bubbles (landing time, chain timer, energy, nerve, cooldowns, war lead) to Torn PDA.">
+  <link rel="icon" href="/assets/mentat-mark.png">
+  <style>
+    :root { --bg: #181614; --card: #221f1b; --line: #3a342c; --text: #ece4d8; --muted: #a99d8c; --accent: #c99a4a; --accent-2: #9a6a1f; --ok: #8fd17f; }
+    @media (prefers-color-scheme: light) { :root { --bg: #f4efe6; --card: #fffdf9; --line: #ddd2c0; --text: #2a2219; --muted: #6b5b46; --accent: #8a5a10; --accent-2: #8a5a10; --ok: #2f7d32; } }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.55 -apple-system, "Segoe UI", Roboto, sans-serif; }
+    main { max-width: 640px; margin: 0 auto; padding: 24px 16px 48px; }
+    header { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+    header img { width: 34px; height: auto; }
+    h1 { margin: 0; font-size: 24px; letter-spacing: .02em; }
+    h2 { font-size: 18px; margin: 28px 0 8px; }
+    p { margin: 8px 0; }
+    .lead { color: var(--muted); margin-top: 0; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin: 12px 0; }
+    ol { padding-left: 22px; margin: 8px 0; }
+    li { margin: 8px 0; }
+    li b { color: var(--text); }
+    .path { color: var(--accent); font-weight: 600; }
+    .url { display: flex; gap: 8px; margin: 10px 0 4px; }
+    .url input { flex: 1; min-width: 0; padding: 11px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--text); font: 14px ui-monospace, Consolas, monospace; }
+    button { padding: 11px 14px; border-radius: 8px; border: 1px solid var(--accent-2); background: var(--accent-2); color: #fff; font: 600 15px inherit; font-family: inherit; }
+    .copied { color: var(--ok); font-size: 14px; min-height: 1.4em; }
+    .bubbles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin: 10px 0; padding: 0; list-style: none; }
+    .bubbles li { margin: 0; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: 14px; }
+    .bubbles b { display: block; font-size: 15px; }
+    .muted { color: var(--muted); font-size: 14px; }
+    a { color: var(--accent); }
+    footer { margin-top: 32px; color: var(--muted); font-size: 13px; }
+  </style>
+</head>
+<body>
+<main>
+  <header><img src="/assets/mentat-mark.png" alt=""><h1>Mentat bubbles for Torn PDA</h1></header>
+  <p class="lead">Small floating bubbles over your Torn pages with live countdowns, the same ones Mentat shows on the desktop. For members of the faction's Mentat server.</p>
+
+  <ul class="bubbles">
+    <li><b>Landing</b>Countdown while you fly, "abroad" while you're away.</li>
+    <li><b>Chain</b>The timer while a chain runs: amber under 2 minutes, red under 1.</li>
+    <li><b>Energy and nerve</b>Current value, green when full. Life is optional.</li>
+    <li><b>Cooldowns</b>Drug, then booster, then medical, while one is running.</li>
+    <li><b>Ranked war</b>Countdown to the start, then your lead.</li>
+  </ul>
+  <p class="muted">Bubbles only show when there's something to show. Tap one to open its Torn page, drag it anywhere, and hold it for settings (turn bubbles on or off, reset their places, sign out).</p>
+  <p class="muted"><b>The Mentat button</b> at the top of the stack hides or shows every bubble with one tap. While they're hidden it shows the most urgent countdown (the chain timer, else your landing time). Drag it and the bubbles follow; you can turn it off in the settings.</p>
+
+  <h2>Add it to Torn PDA</h2>
+  <div class="card">
+    <ol>
+      <li>Make sure your <b>API key</b> is set in Torn PDA (a Limited key).</li>
+      <li>Open Torn PDA's <span class="path">Settings → Advanced browser settings</span> and turn on <b>Enable custom user scripts</b>.</li>
+      <li>Tap <span class="path">Manage scripts</span>, then <b>+</b> to add a script.</li>
+      <li>Choose the <span class="path">Remote load/update</span> tab and paste this address:
+        <div class="url"><input id="u" readonly value="https://mentat.example.com/pda/mentat-bubbles.user.js" aria-label="Script address"><button id="copy" type="button">Copy</button></div>
+        <div class="copied" id="copied" role="status"></div>
+      </li>
+      <li>Fetch the script, check its name is <b>Mentat bubbles</b>, and save it.</li>
+      <li>Open any Torn page in Torn PDA. The first time, the bubbles check you're in the faction (a few seconds); after that they appear straight away.</li>
+    </ol>
+    <p class="muted">Torn PDA keeps the script up to date from that address, and tells you when there's a new version if you turned on its script update notices.</p>
+  </div>
+
+  <h2>Your key and your data</h2>
+  <div class="card">
+    <p>The script uses the API key you already gave Torn PDA (Torn PDA fills it in; you don't type it here).</p>
+    <p>To check you're a member, the key is sent once to the Mentat server, which asks Torn who you are and which faction you're in, then forgets the key. It isn't stored or logged there. The sign-in it gets back is kept in Torn PDA's own script storage.</p>
+    <p>The bubbles get your bars, cooldowns, travel and chain from Torn's API with your key once a minute, and your faction's ranked war every 5 minutes. Nothing goes anywhere else.</p>
+    <p>They only display: the script never reads, changes or clicks anything on Torn's pages, and tapping a bubble just opens the matching page.</p>
+  </div>
+
+  <h2>If something's wrong</h2>
+  <div class="card">
+    <p><b>No bubbles?</b> They only show when there's something to show; hold any visible bubble for the settings. Check <b>Enable custom user scripts</b> is on and the script is switched on in <span class="path">Manage scripts</span>.</p>
+    <p><b>"Mentat is for members of …"</b> Your key belongs to someone outside the faction. If you should have access, ask an officer to add you to Mentat's allow-list. The bubbles try again after 12 hours, or remove and re-add the script.</p>
+    <p><b>"Check the API key in Torn PDA"</b> Torn rejected the key. Set a working key in Torn PDA's settings and reload a page.</p>
+  </div>
+
+  <footer>Mentat · free tools for the faction. Torn PDA is a separate app by Manuito; this script uses its documented userscript features.</footer>
+</main>
+<script src="guide.js"></script>
+</body>
+</html>

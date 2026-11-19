@@ -1,0 +1,211 @@
+/* Colour themes for every Mentat window (tools, Torn browser bar, chat bar, bubble,
+   popups). Each theme sets a few base colours; everything else is mixed from them below,
+   so a theme can't end up half-styled. The theme is set as <html data-theme="…"> by the
+   preload script, plus an optional custom accent colour. Chart series colours stay the
+   same in every theme (validated on both dark and light surfaces). */
+
+:root, [data-theme="dark"] {
+  color-scheme: dark;
+  /* Base: Torn Dark (default) */
+  --bg: #191919;
+  --bg-2: #222;
+  --bg-3: #2c2c2c;
+  --bg-4: #363636;
+  --line: #3a3a3a;
+  --text: #ddd;
+  --muted: #a3a3a3;
+  --accent: #74b816;
+  --accent-2: #5c9410;
+  --red: #e5534b;
+  --orange: #e8912d;
+  --yellow: #d4b72c;
+  --blue: #4ea1e8;
+  --green: #74b816;
+  --energy: #6cb33e;
+  --nerve: #d4483a;
+  --happy: #d6b02a;
+  --life: #4c8fd4;
+  --chrome: color-mix(in srgb, var(--bg) 62%, black);
+  --shade: 0, 0, 0;
+
+  /* Derived */
+  --on-accent: #fff;
+  --tab-bg: color-mix(in srgb, var(--bg) 85%, var(--bg-2));
+  --tab-hover: color-mix(in srgb, var(--bg-2) 80%, var(--bg-3));
+  --spinner: var(--bg-4);
+  --row-line: color-mix(in srgb, var(--line) 55%, var(--bg-2));
+  --row-hover: color-mix(in srgb, var(--text) 4%, var(--bg-2));
+  --row-me: color-mix(in srgb, var(--accent) 13%, var(--bg-2));
+  --row-selected: color-mix(in srgb, var(--accent) 15%, var(--bg-2));
+  --pos: color-mix(in srgb, var(--green) 70%, var(--text));
+  --neg: color-mix(in srgb, var(--red) 72%, var(--text));
+  --pill-ok-bg: color-mix(in srgb, var(--green) 22%, var(--bg-2));
+  --pill-ok: color-mix(in srgb, var(--green) 62%, var(--text));
+  --pill-bad-bg: color-mix(in srgb, var(--red) 22%, var(--bg-2));
+  --pill-bad: color-mix(in srgb, var(--red) 62%, var(--text));
+  --pill-warn-bg: color-mix(in srgb, var(--orange) 22%, var(--bg-2));
+  --pill-warn: color-mix(in srgb, var(--orange) 62%, var(--text));
+  --pill-info-bg: color-mix(in srgb, var(--blue) 22%, var(--bg-2));
+  --pill-info: color-mix(in srgb, var(--blue) 62%, var(--text));
+  --banner-bg: color-mix(in srgb, var(--orange) 18%, var(--bg));
+  --banner-text: color-mix(in srgb, var(--orange) 50%, var(--text));
+  --notice-bg: color-mix(in srgb, var(--orange) 30%, var(--bg-2));
+  --danger-bg: color-mix(in srgb, var(--red) 28%, var(--bg-2));
+  --chart-grid: var(--bg-4);
+  --chart-cross: var(--muted);
+  --scroll-thumb: color-mix(in srgb, var(--bg-4) 85%, var(--text));
+  --overlay: rgba(var(--shade), .6);
+  --shadow: rgba(var(--shade), .5);
+  /* Edges of buttons, inputs and dropdowns: at least 3:1 against the surfaces they sit on (WCAG 1.4.11). */
+  --control-line: color-mix(in srgb, var(--muted) 64%, var(--bg-2));
+}
+
+/* Contrast (raised 2026-11-18 for players with low vision): in every dark theme, text is at least
+   8:1 on every surface, muted text at least 4.5:1 even on hover backgrounds, and control edges
+   (--control-line) at least 3:1. Mentat goes further: muted text at least 7:1, and near-white text
+   so it doesn't blend with the sand accent. Check changes with a contrast tool before shipping. */
+/* Mentat (the default): the symbol's sand gold on warm dark brown, like the sign-in screen.
+   Sand from the symbol: highlight #f8debd, mid #debca0, dark #cba580, shadow #b99573. */
+[data-theme="mentat"] {
+  --bg: #17120d; --bg-2: #1f1912; --bg-3: #2a2219; --bg-4: #3a2f22; --line: #4a3c2b;
+  --text: #f6f1e9; --muted: #c4b8a8;
+  --accent: #debca0; --accent-2: #cba580; --on-accent: #241a0f;
+  --green: #8cc06a; --red: #e86a5c; --orange: #e5a04a; --yellow: #e2c35a; --blue: #7fb0dd;
+  --energy: #8cc06a; --nerve: #e0645a; --happy: #e2c35a; --life: #7fb0dd;
+  --chrome: #110d09;
+  --shade: 0, 0, 0;
+}
+
+[data-theme="midnight"] {
+  --bg: #0f1420; --bg-2: #151b2b; --bg-3: #1d2538; --bg-4: #27314a; --line: #2e3854;
+  --text: #d9dfeb; --muted: #919cb2;
+  --accent: #4f8ff7; --accent-2: #3570d4; --green: #5cc27a;
+  --blue: #6aa8ff; --red: #ef6461; --orange: #f0a04b; --yellow: #e6c547;
+}
+
+[data-theme="oled"] {
+  --bg: #000; --bg-2: #0b0b0b; --bg-3: #171717; --bg-4: #232323; --line: #2a2a2a;
+  --text: #e2e2e2; --muted: #8f8f8f;
+  --chrome: #000;
+}
+
+[data-theme="slate"] {
+  --bg: #1c2128; --bg-2: #22272e; --bg-3: #2d333b; --bg-4: #373e47; --line: #444c56;
+  --text: #d8e2ec; --muted: #9facb8;
+  --accent: #2fb3a3; --accent-2: #218a7d; --green: #57c27a;
+}
+
+[data-theme="crimson"] {
+  --bg: #1a1515; --bg-2: #221b1b; --bg-3: #2d2323; --bg-4: #3a2c2c; --line: #463434;
+  --text: #e6dcdc; --muted: #aa9898;
+  --accent: #e0464a; --accent-2: #b93236; --green: #6fbf5a;
+}
+
+[data-theme="amethyst"] {
+  --bg: #16131e; --bg-2: #1d1928; --bg-3: #272135; --bg-4: #312a43; --line: #3b3250;
+  --text: #e3ddf0; --muted: #9f96b6;
+  --accent: #9d6bff; --accent-2: #7b4be0; --green: #63c38a;
+}
+
+[data-theme="sepia"] {
+  --bg: #1d1915; --bg-2: #25201b; --bg-3: #2f2922; --bg-4: #3b332a; --line: #463d32;
+  --text: #e8dfd1; --muted: #ac9f8c;
+  --accent: #d9a441; --accent-2: #b0822a; --green: #8fbf5a;
+  --on-accent: #1d1915;
+}
+
+/* ---- Light themes. They share this block (status colours tuned for light backgrounds, softer
+   shadows); each then sets its own surfaces and accent below. Text is at least 7:1 on every
+   surface, muted text and the accent at least 4.5:1, and white on the accent at least 4.5:1. */
+[data-theme="light"], [data-theme="sand"], [data-theme="paper"], [data-theme="frost"], [data-theme="sage"],
+[data-theme="rose"], [data-theme="lavender"], [data-theme="contrast"] {
+  color-scheme: light;
+  --green: #2f8a1a;
+  --red: #c8352e; --orange: #b8640c; --yellow: #957600; --blue: #1f6fc5;
+  --energy: #4f9d2a; --nerve: #c43c2f; --happy: #b8930f; --life: #2f78c4;
+  --shade: 30, 40, 55;
+  --pos: color-mix(in srgb, var(--green) 85%, var(--text));
+  --neg: color-mix(in srgb, var(--red) 85%, var(--text));
+  --pill-ok: color-mix(in srgb, var(--green) 80%, var(--text));
+  --pill-bad: color-mix(in srgb, var(--red) 80%, var(--text));
+  --pill-warn: color-mix(in srgb, var(--orange) 80%, var(--text));
+  --pill-info: color-mix(in srgb, var(--blue) 80%, var(--text));
+  --pill-ok-bg: color-mix(in srgb, var(--green) 14%, var(--bg-2));
+  --pill-bad-bg: color-mix(in srgb, var(--red) 12%, var(--bg-2));
+  --pill-warn-bg: color-mix(in srgb, var(--orange) 14%, var(--bg-2));
+  --pill-info-bg: color-mix(in srgb, var(--blue) 12%, var(--bg-2));
+  --banner-bg: color-mix(in srgb, var(--orange) 14%, var(--bg-2));
+  --banner-text: color-mix(in srgb, var(--orange) 70%, var(--text));
+  --notice-bg: color-mix(in srgb, var(--orange) 85%, var(--bg-2));
+  --danger-bg: color-mix(in srgb, var(--red) 16%, var(--bg-2));
+  --overlay: rgba(var(--shade), .35);
+  --shadow: rgba(var(--shade), .22);
+  --control-line: color-mix(in srgb, var(--muted) 80%, var(--bg-2));
+}
+
+/* Daylight: cool grey, Torn green */
+[data-theme="light"] {
+  --bg: #eef0f3; --bg-2: #ffffff; --bg-3: #f1f3f6; --bg-4: #e1e5ea; --line: #d0d6dd;
+  --text: #1e2329; --muted: #59646f;
+  --accent: #367f0e; --accent-2: #2f730a;
+  --chrome: #e3e7ec;
+}
+
+/* Sand: warm parchment with Mentat's bronze */
+[data-theme="sand"] {
+  --bg: #f3ece0; --bg-2: #fcf8f1; --bg-3: #f2eadd; --bg-4: #e5d9c5; --line: #d8c9b0;
+  --text: #2b2219; --muted: #6b5b46;
+  --accent: #93600f; --accent-2: #7a4e0b;
+  --chrome: #eae0cf;
+  --shade: 60, 42, 20;
+}
+
+/* Paper: plain white and soft grey, ink blue */
+[data-theme="paper"] {
+  --bg: #f3f3f1; --bg-2: #ffffff; --bg-3: #f4f4f1; --bg-4: #e5e5e0; --line: #d6d6d0;
+  --text: #22221f; --muted: #5f5f5a;
+  --accent: #2563a8; --accent-2: #1d4f87;
+  --chrome: #e9e9e6;
+}
+
+/* Frost: icy blue */
+[data-theme="frost"] {
+  --bg: #e9f0f7; --bg-2: #f9fbfe; --bg-3: #edf3f9; --bg-4: #dae5f1; --line: #c7d5e5;
+  --text: #16253a; --muted: #4f647c;
+  --accent: #1d6bc9; --accent-2: #1858a8;
+  --chrome: #dde7f2;
+}
+
+/* Sage: soft green */
+[data-theme="sage"] {
+  --bg: #ecf1ea; --bg-2: #fbfdfa; --bg-3: #eef3ec; --bg-4: #dde6d9; --line: #c9d6c5;
+  --text: #1c291c; --muted: #556653;
+  --accent: #2c7746; --accent-2: #22623a;
+  --chrome: #e0e8dc;
+}
+
+/* Rose: blush pink, deep crimson */
+[data-theme="rose"] {
+  --bg: #f6edef; --bg-2: #fffbfc; --bg-3: #f6ecef; --bg-4: #eadadf; --line: #dcc5cc;
+  --text: #2e1c22; --muted: #725760;
+  --accent: #ad2c4b; --accent-2: #91223e;
+  --chrome: #efe1e5;
+}
+
+/* Lavender: pale violet */
+[data-theme="lavender"] {
+  --bg: #f0eef8; --bg-2: #fdfcff; --bg-3: #f1eefa; --bg-4: #e2ddf1; --line: #d2cbe6;
+  --text: #211c33; --muted: #615a7a;
+  --accent: #6540c2; --accent-2: #5532a8;
+  --chrome: #e6e2f3;
+}
+
+/* High contrast (light): black on white, dark lines, strong blue */
+[data-theme="contrast"] {
+  --bg: #ffffff; --bg-2: #ffffff; --bg-3: #efefef; --bg-4: #dcdcdc; --line: #6b6b6b;
+  --text: #000000; --muted: #383838;
+  --accent: #0046b0; --accent-2: #003a94;
+  --red: #b0201a; --orange: #8f4a00; --yellow: #6b5500; --blue: #0046b0; --green: #1d6b0e;
+  --chrome: #f0f0f0;
+  --row-line: #b5b5b5;
+}

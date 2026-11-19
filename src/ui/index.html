@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data:; connect-src 'none'">
+  <title>Mentat</title>
+  <link rel="stylesheet" href="themes.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="tool gated">
+  <header id="toolbar">
+    <span class="brand"><img src="../assets/mentat-mark.png" alt="">Mentat</span>
+    <span id="stack-nag" role="button" tabindex="0" hidden></span>
+    <nav id="panel-nav" aria-label="Tabs"></nav>
+    <span class="spacer"></span>
+    <div id="clocks" aria-label="Clocks"></div>
+    <button id="btn-chat" title="Pop-out Torn chat window (Ctrl+K)">Chat</button>
+    <button id="btn-pages" title="Open a Torn page in a new browser tab">Pages &#9662;</button>
+    <button id="btn-torn" class="primary" title="Open the Torn browser (Ctrl+D)">Open Torn</button>
+    <button id="btn-account" hidden aria-haspopup="menu" aria-expanded="false" title="Your account"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zm0 2c-4.4 0-8 2.2-8 5v2h16v-2c0-2.8-3.6-5-8-5z"/></svg><span class="acct-name">Account</span></button>
+  </header>
+  <div id="banner" hidden></div>
+  <div id="workspace">
+  <aside id="sidebar" hidden>
+    <div id="sidebar-nav"></div>
+    <button id="sidebar-toggle" title="Collapse the side bar (Ctrl+B)"><span class="nav-icon">&#171;</span><span class="nav-label">Collapse</span></button>
+  </aside>
+  <main id="panels">
+    <section data-panel="overview"></section>
+    <section data-panel="chain"></section>
+    <section data-panel="research"></section>
+    <section data-panel="faction"></section>
+    <section data-panel="war"></section>
+    <section data-panel="targets"></section>
+    <section data-panel="travel"></section>
+    <section data-panel="market"></section>
+    <section data-panel="planner"></section>
+    <section data-panel="casino"></section>
+    <section data-panel="alerts"></section>
+    <section data-panel="settings"></section>
+  </main>
+  </div>
+  <footer id="api-footer"></footer>
+  <div id="item-modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-label="Item prices">
+      <button class="modal-close" data-item-close title="Close (Esc)">&times;</button>
+      <div id="item-modal-body"></div>
+    </div>
+  </div>
+
+  <script src="util.js"></script>
+  <script src="icons.js"></script>
+  <script src="nav.js"></script>
+  <script src="chart.js"></script>
+  <script src="travel.js"></script>
+  <script src="market.js"></script>
+  <script src="alerts.js"></script>
+  <script src="war.js"></script>
+  <script src="intel.js"></script>
+  <script src="research.js"></script>
+  <script src="planner-math.js"></script>
+  <script src="planner.js"></script>
+  <script src="gamble-math.js"></script>
+  <script src="casino.js"></script>
+  <script src="welcome.js"></script>
+  <script src="setup.js"></script>
+  <script src="stacking.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

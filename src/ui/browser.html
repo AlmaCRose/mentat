@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data:; connect-src 'none'">
+  <title>Torn</title>
+  <link rel="stylesheet" href="themes.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="browser-chrome">
+  <header id="header">
+    <div id="tabstrip">
+      <div id="tabs"></div>
+      <button id="new-tab" class="icon-btn" title="New tab (Ctrl+T)">+</button>
+    </div>
+    <div id="navbar">
+      <button class="icon-btn" id="btn-back" title="Back (Alt+Left)">&#8592;</button>
+      <button class="icon-btn" id="btn-forward" title="Forward (Alt+Right)">&#8594;</button>
+      <button class="icon-btn" id="btn-reload" title="Reload (F5)">&#8635;</button>
+      <button class="icon-btn" id="btn-home" title="Home">&#8962;</button>
+      <form id="address-form"><input id="address" spellcheck="false" autocomplete="off" placeholder="torn.com page, e.g. gym.php"></form>
+      <div id="clocks" hidden></div>
+      <button id="btn-pages" title="Open a Torn page in a new tab">Pages &#9662;</button>
+      <button id="btn-tt" title="TornTools dashboard (pop-up)" hidden>TornTools</button>
+      <button id="btn-chat" title="Pop-out Torn chat window (Ctrl+K)">Chat</button>
+      <button id="btn-tool"title="Show the Mentat tools (Ctrl+D)">Tools</button>
+    </div>
+  </header>
+  <script src="browser-ui.js"></script>
+</body>
+</html>
