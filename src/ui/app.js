@@ -452,7 +452,13 @@ function targetRank(t, now) {
 // ---- Abroad list: where players are, from Torn's status text ----
 const sameCountry = (a, b) => !!a && !!b && String(a).trim().replace(/\.$/, '').toLowerCase() === String(b).trim().replace(/\.$/, '').toLowerCase();
 const abroadIn = st => { const m = st && st.state === 'Abroad' ? /^In (.+?)\.?$/i.exec(String(st.description || '').trim()) : null; return m ? m[1] : ''; };
-const flyingTo = st => { const m = st && st.state === 'Traveling' ? /^Traveling to (.+?)\.?$/i.exec(String(st.description || '').trim()) : null; return m ? m[1] : ''; };
+// "Traveling from Torn to Japan" (older wording "Traveling to Japan") -> 'Japan'
+const flyingTo = st => {
+  if (!st || st.state !== 'Traveling') return '';
+  const s = String(st.description || '').trim();
+  const m = /^Traveling from .+? to (.+?)\.?$/i.exec(s) || /^Traveling to (.+?)\.?$/i.exec(s);
+  return m && m[1].toLowerCase() !== 'torn' ? m[1] : '';
+};
 // Ready = in the country you're in; then on their way there; then hospital (soonest out first).
 function abroadRank(t, here, now) {
   if (t.invalid || !t.status) return [4, 0];

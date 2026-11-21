@@ -20,7 +20,7 @@ const SYNC_UNITS = [
   'alerts.rules', 'alerts.volume',
   'gamble.log', 'gamble.session',
   'planner.items', 'planner.days',
-  'war.watchId', 'war.interval', 'war.pinned', 'research.watchId',
+  'war.watchId', 'war.interval', 'war.live', 'war.pinned', 'research.watchId',
   'ffscouter.intervalHours', 'scout.spread',
   'chatwin.emojis', 'chatwin.onTop', 'chatwin.minimizeToBubble', 'chatwin.compact', 'chatwin.hideInBrowser',
 ];

@@ -252,6 +252,8 @@ function renderWar() {
       <span class="muted small">${w.own ? `${esc(w.own.name)}${w.own.tag ? ` [${esc(w.own.tag)}]` : ''}${w.own.rank ? ` · ${esc(w.own.rank)}` : ''}` : w.noFaction ? 'You are not in a faction.' : 'Loading your faction…'}</span>
       <span class="spacer"></span>
       <label>Refresh every <select data-set="war.interval" data-num><option value="15">15 s</option><option value="30">30 s</option><option value="60">1 min</option><option value="120">2 min</option></select></label>
+      <label title="During a war, while this tab is on screen, the enemy's statuses refresh this often (one request each time: 20 a minute at 3 s, 12 at 5 s). Your other Mentat calls make room for it.">Live while watching <select data-set="war.live" data-num><option value="0">Off</option><option value="3">3 s</option><option value="5">5 s</option><option value="10">10 s</option></select></label>
+      ${w.live ? `<span class="pill ok" title="Enemy statuses refresh every ${w.live} s while this tab is on screen during the war.">Live · ${w.live} s</span>` : ''}
       <button data-cmd="war.refresh">Refresh now</button>
     </div>
     ${w.error ? `<div class="note neg">${esc(w.error)}</div>` : ''}

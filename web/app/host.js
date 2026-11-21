@@ -207,6 +207,8 @@
       store, dataDir: DATA, version: Mentat.version, deviceName: isPhone ? (standalone ? 'Mentat phone app' : 'Mentat on a phone browser') : 'Mentat in a browser',
       defaultServer: location.origin, send: emit, notify, openUrl: url => openUrl(url), migrated,
       activity: ACTIVITY, archive: ARCHIVE, scoutLocal: false,
+      // A tab is on show only while the page is visible (War's live mode stops in the background).
+      viewing: tab => !document.hidden && String(store.get('ui.panel') || '').split(':')[0] === tab,
       exportResearch: exporters.exportResearch, exportIntel: exporters.exportIntel,
       publicExtra: () => ({
         popouts: { minimizeToBubble: false }, updates: { auto: false },

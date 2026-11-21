@@ -253,7 +253,8 @@ function start() {
     activity, archive, scoutLocal: true,
     // A tab is on show when the tools window is on it (or one of its sub-tabs) or a pop-out of it
     // is open as a window. Bubbles only need what their badge shows, which keeps updating anyway.
-    viewing: tab => String(store.get('ui.panel') || '').split(':')[0] === tab || popouts.showing(tab),
+    // (Minimised or in the tray doesn't count: War's live mode and Market's refresh stop then.)
+    viewing: tab => (String(store.get('ui.panel') || '').split(':')[0] === tab && !win.isDestroyed() && win.isVisible() && !win.isMinimized()) || popouts.showing(tab),
     extraFeatures: { updates: updater },
     activeUrl: () => browser.activeUrl(),
     exportResearch: p => exportResearch(p, win),

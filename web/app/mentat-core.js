@@ -495,7 +495,8 @@ const DEFAULTS = {
   market: { watch: {}, watchInterval: 300, payoutPct: 95, bazaar: true, priceSource: 'both' },
   ffscouter: { keyEnc: '', account: null, acknowledgedAt: 0, stats: {}, intervalHours: 6 },
   alerts: { rules: [], volume: 0.6 },
-  war: { watchId: 0, interval: 30, pinned: [] },
+  // live: seconds between enemy refreshes while you watch the War tab during a war (0 = off)
+  war: { watchId: 0, interval: 30, pinned: [], live: 3 },
   // Scouting (activity + war records of the factions around your rank). On this PC it's off
   // unless turned on; a sync server always scouts.
   scout: { enabled: false, perMinute: 6, spread: 1 },
@@ -533,6 +534,7 @@ const SETTABLE = {
       && Object.entries(v.sub).every(([k, a]) => TABS.includes(k) && ids(a));
   },
   'war.interval': num(15, 300),
+  'war.live': v => [0, 3, 5, 10].includes(v),
   'ui.openTornOnStart': bool, 'ui.closeToTray': bool, 'ui.clock24': bool, 'ui.avatars': bool, 'ui.clockThird': bool, 'ui.browserClocks': bool,
   'ui.clockZone': v => typeof v === 'string' && TIME_ZONES.has(v),
   'ui.popupStyle': oneOf('windows', 'app'), 'ui.popupSeconds': num(0, 600),
@@ -1440,7 +1442,7 @@ const SYNC_UNITS = [
   'alerts.rules', 'alerts.volume',
   'gamble.log', 'gamble.session',
   'planner.items', 'planner.days',
-  'war.watchId', 'war.interval', 'war.pinned', 'research.watchId',
+  'war.watchId', 'war.interval', 'war.live', 'war.pinned', 'research.watchId',
   'ffscouter.intervalHours', 'scout.spread',
   'chatwin.emojis', 'chatwin.onTop', 'chatwin.minimizeToBubble', 'chatwin.compact', 'chatwin.hideInBrowser',
 ];
@@ -4785,7 +4787,8 @@ function idFromUrl(url) {
 }
 
 // ---- Where a player is (the Abroad list) ----
-// From Torn's status text: "In Japan" while abroad, "Traveling to Japan", "Returning to Torn from Japan".
+// From Torn's status text: "In Japan" while abroad; flying "Traveling from Torn to Japan" /
+// "Traveling from Japan to Torn" (older wording: "Traveling to Japan", "Returning to Torn from Japan").
 const norm = s => String(s || '').trim().replace(/\.$/, '').toLowerCase();
 const sameCountry = (a, b) => !!a && !!b && norm(a) === norm(b);
 function countryIn(st) {
@@ -4795,7 +4798,8 @@ function countryIn(st) {
 }
 function returningFrom(st) {
   if (!st || st.state !== 'Traveling') return '';
-  const m = /^Returning to Torn from (.+?)\.?$/i.exec(String(st.description || '').trim());
+  const s = String(st.description || '').trim();
+  const m = /^Traveling from (.+?) to Torn\.?$/i.exec(s) || /^Returning to Torn from (.+?)\.?$/i.exec(s);
   return m ? m[1] : '';
 }
 // Your country for the Abroad list: where you are abroad, or where you're flying to. '' in Torn
@@ -5436,8 +5440,9 @@ const { Store } = require('../store');
 const { COUNTRIES, METHODS } = require('./travel');
 
 // ---- Travel estimates for other players ----
-// The API doesn't say when someone lands, but it gives the destination ("Traveling to
-// Mexico" / "Returning to Torn from Mexico") and the plane: private jet = WLT, light
+// The API doesn't say when someone lands, but it gives the destination ("Traveling from Torn
+// to Mexico" / "Traveling from Mexico to Torn"; older wording "Traveling to Mexico" /
+// "Returning to Torn from Mexico") and the plane: private jet = WLT, light
 // aircraft = Airstrip, airliner = Standard or Business class. With the wiki flight times
 // (or your own measured ones) that gives the flight length; the departure is caught when
 // someone switches to Traveling between two checks. Flights vary ±3%, and a travel book
@@ -5448,7 +5453,14 @@ COUNTRY_BY_NAME.set('united arab emirates', COUNTRY_BY_NAME.get('uae'));
 COUNTRY_BY_NAME.set('cayman', COUNTRY_BY_NAME.get('cayman islands'));
 function parseTrip(desc) {
   const s = String(desc || '').trim();
-  let m = /^Traveling to (.+?)\.?$/i.exec(s);
+  // Torn's wording since 2026 (seen in war data 2026-11-21): "Traveling from Torn to Japan",
+  // "Traveling from Japan to Torn". The flight's country is the end that isn't Torn.
+  let m = /^Traveling from (.+?) to (.+?)\.?$/i.exec(s);
+  if (m) {
+    const back = m[2].toLowerCase() === 'torn';
+    return { country: COUNTRY_BY_NAME.get((back ? m[1] : m[2]).toLowerCase()), back };
+  }
+  m = /^Traveling to (.+?)\.?$/i.exec(s);
   if (m) return { country: COUNTRY_BY_NAME.get(m[1].toLowerCase()), back: false };
   m = /^Returning to Torn from (.+?)\.?$/i.exec(s);
   if (m) return { country: COUNTRY_BY_NAME.get(m[1].toLowerCase()), back: true };
@@ -5570,6 +5582,18 @@ class WarFeature extends EventEmitter {
     return Math.max(15, Math.min(300, Number(this.store.get('war.interval')) || 30)) * SEC;
   }
 
+  // Live mode (the user's request, 2026-11-21): during a war, while the War tab is on show (tools
+  // window or a pop-out), the enemy's members refresh every war.live seconds (one request each,
+  // with the cache-bypassing timestamp). 0 = off. Everything else keeps the normal interval.
+  liveOn(now = Date.now()) {
+    return !!(Number(this.store.get('war.live')) > 0 && this.inWar(now) && this.viewing && this.viewing('war'));
+  }
+
+  memberInterval(now = Date.now()) {
+    if (!this.liveOn(now)) return this.interval();
+    return Math.min(this.interval(), Math.max(3, Number(this.store.get('war.live'))) * SEC);
+  }
+
   ranked() {
     return this.state.wars && this.state.wars.ranked;
   }
@@ -5633,7 +5657,7 @@ class WarFeature extends EventEmitter {
     const target = this.enemyTarget();
     if (target && (busy || looking)) {
       if (now - this.last.enemyBasic >= BASIC_EVERY && target.source === 'watch') return this.fetchEnemyBasic;
-      if (now - this.last.enemy >= this.interval()) return this.fetchEnemy;
+      if (now - this.last.enemy >= this.memberInterval(now)) return this.fetchEnemy;
       // The enemy's chain: as often as members during a war, less when just looking.
       if (now - this.last.enemyChain >= (busy ? this.interval() : 120 * SEC)) return this.fetchEnemyChain;
     }
@@ -5870,6 +5894,7 @@ class WarFeature extends EventEmitter {
       pinned: this.pinned(),
       enemyChain: this.state.enemyChain && this.enemyTarget() && this.state.enemyChain.factionId === this.enemyTarget().id ? this.state.enemyChain : null,
       interval: this.interval() / SEC,
+      live: this.liveOn() ? this.memberInterval() / SEC : 0, // seconds between enemy refreshes in live mode
       history: h && r && h.warId === r.id ? h : null,
     };
   }

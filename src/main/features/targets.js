@@ -22,7 +22,8 @@ function idFromUrl(url) {
 }
 
 // ---- Where a player is (the Abroad list) ----
-// From Torn's status text: "In Japan" while abroad, "Traveling to Japan", "Returning to Torn from Japan".
+// From Torn's status text: "In Japan" while abroad; flying "Traveling from Torn to Japan" /
+// "Traveling from Japan to Torn" (older wording: "Traveling to Japan", "Returning to Torn from Japan").
 const norm = s => String(s || '').trim().replace(/\.$/, '').toLowerCase();
 const sameCountry = (a, b) => !!a && !!b && norm(a) === norm(b);
 function countryIn(st) {
@@ -32,7 +33,8 @@ function countryIn(st) {
 }
 function returningFrom(st) {
   if (!st || st.state !== 'Traveling') return '';
-  const m = /^Returning to Torn from (.+?)\.?$/i.exec(String(st.description || '').trim());
+  const s = String(st.description || '').trim();
+  const m = /^Traveling from (.+?) to Torn\.?$/i.exec(s) || /^Returning to Torn from (.+?)\.?$/i.exec(s);
   return m ? m[1] : '';
 }
 // Your country for the Abroad list: where you are abroad, or where you're flying to. '' in Torn

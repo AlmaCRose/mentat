@@ -24,7 +24,8 @@ const DEFAULTS = {
   market: { watch: {}, watchInterval: 300, payoutPct: 95, bazaar: true, priceSource: 'both' },
   ffscouter: { keyEnc: '', account: null, acknowledgedAt: 0, stats: {}, intervalHours: 6 },
   alerts: { rules: [], volume: 0.6 },
-  war: { watchId: 0, interval: 30, pinned: [] },
+  // live: seconds between enemy refreshes while you watch the War tab during a war (0 = off)
+  war: { watchId: 0, interval: 30, pinned: [], live: 3 },
   // Scouting (activity + war records of the factions around your rank). On this PC it's off
   // unless turned on; a sync server always scouts.
   scout: { enabled: false, perMinute: 6, spread: 1 },
@@ -62,6 +63,7 @@ const SETTABLE = {
       && Object.entries(v.sub).every(([k, a]) => TABS.includes(k) && ids(a));
   },
   'war.interval': num(15, 300),
+  'war.live': v => [0, 3, 5, 10].includes(v),
   'ui.openTornOnStart': bool, 'ui.closeToTray': bool, 'ui.clock24': bool, 'ui.avatars': bool, 'ui.clockThird': bool, 'ui.browserClocks': bool,
   'ui.clockZone': v => typeof v === 'string' && TIME_ZONES.has(v),
   'ui.popupStyle': oneOf('windows', 'app'), 'ui.popupSeconds': num(0, 600),
