@@ -100,6 +100,17 @@ function statusDetail(m) {
 const WAR_FILTERS = [['all', 'All'], ['hittable', 'Hittable now'], ['soon', 'Out or landing within 15 min'], ['hospital', 'Hospital'], ['travel', 'Traveling / abroad'], ['online', 'Online / idle']];
 const WAR_SORTS = [['status', 'Status (hittable first)'], ['out', 'Out of hospital soonest'], ['level', 'Level'], ['stats', 'Est. stats'], ['active', 'Last active'], ['name', 'Name']];
 
+// War claims (shared through the Mentat server): who's going for this enemy, in claim order.
+const claimsFor = id => { const c = S.features.claims; return (c && c.available && c.claims && c.claims[id]) || []; };
+function claimCell(m) {
+  const c = S.features.claims;
+  if (!c || !c.available) return '';
+  const list = claimsFor(m.id);
+  const mine = list.some(x => x.by === c.me);
+  const who = list.map((x, i) => `${i + 1}. ${x.by === c.me ? '<b>you</b>' : esc(x.name)} <span class="muted">${fmtAgo(x.at)}</span>`).join('<br>');
+  return ` <button class="${mine ? 'claimed' : ''}" data-war-claim="${m.id}" data-on="${mine ? 0 : 1}" title="${mine ? 'Drop your claim' : 'Claim: everyone using Mentat sees you are going for them. It clears when they land in hospital, or after 15 minutes.'}">${mine ? 'Unclaim' : 'Claim'}</button>${list.length ? `<div class="small claim-list" title="Claimed, in order">${who}</div>` : ''}`;
+}
+
 function memberRows(list, opts) {
   const now = Date.now();
   const ffs = S.features.ffscouter || {};
@@ -161,13 +172,13 @@ function memberRows(list, opts) {
       const away = m.state === 'Traveling' || m.state === 'Abroad';
       const isPinned = pinned.has(m.id);
       const band = s && s.bs ? estBand(s.bs, mine) : null;
-      return `<tr class="${hittable(m) && opts.enemy ? 'war-hit' : ''} ${away ? 'dim' : ''}">
+      return `<tr class="${hittable(m) && opts.enemy ? 'war-hit' : ''} ${away ? 'dim' : ''} ${opts.enemy && claimsFor(m.id).length ? 'claimed-row' : ''}">
         <td><button class="pin-btn ${isPinned ? 'on' : ''}" data-war-pin="${m.id}" data-on="${isPinned ? 0 : 1}" title="${isPinned ? 'Unpin' : 'Pin to the list at the top'}">${isPinned ? '&#9733;' : '&#9734;'}</button>${avatar(m.id)}${link(profileUrl(m.id), esc(m.name))} <span class="muted small">[${m.id}]</span><div class="muted small pin-indent">${esc(m.position)}${m.revivable ? ' · revivable' : ''}</div></td>
         <td class="num">${m.level}</td>
         <td>${statusPill({ state: m.state, description: m.description }, m.until)}${statusDetail(m)}</td>
         <td>${lastActionDot(m)}</td>
         ${showStats ? `<td class="num">${s && s.bsHuman ? `<span class="est ${band ? band.cls : ''}" title="${band ? `${ratioText(band.ratio)} of your ${compactStat(mine)} (${band.label})` : 'Estimated total battle stats (FFScouter)'}">${esc(s.bsHuman)}</span><div class="muted small">${band ? `${ratioText(band.ratio)} · ` : ''}FF ${s.ff != null ? Number(s.ff).toFixed(2) : '–'}</div>` : '<span class="muted small">–</span>'}</td>` : ''}
-        <td class="nowrap">${opts.enemy ? `<button class="primary" data-open="${attackUrl(m.id)}" title="Open the attack page in a Torn tab">Attack</button> <button data-war-target="${m.id}" title="Add to your Targets list">+ Target</button>` : ''}</td>
+        <td class="nowrap">${opts.enemy ? `<button class="primary" data-open="${attackUrl(m.id)}" title="Open the attack page in a Torn tab">Attack</button> <button data-war-target="${m.id}" title="Add to your Targets list">+ Target</button>${claimCell(m)}` : ''}</td>
       </tr>`;
     }).join('') || `<tr><td colspan="6" class="muted">No members match.</td></tr>`}
   </table></div>
@@ -257,6 +268,7 @@ function renderWar() {
       <button data-cmd="war.refresh">Refresh now</button>
     </div>
     ${w.error ? `<div class="note neg">${esc(w.error)}</div>` : ''}
+    ${S.features.claims && S.features.claims.error ? `<div class="note neg">Claims: ${esc(S.features.claims.error)}</div>` : ''}
     ${r ? rankedCard(w, r) : `<div class="war-card"><div class="war-title">No ranked war right now</div><div class="muted small">${w.wars ? `Checked ${ago(w.wars.fetchedAt)}.` : 'Checking…'} When your faction is matched, the countdown and live scores show here.</div></div>`}
     ${w.own || w.target ? chainsCard(w) : ''}
     ${otherWars(w)}
@@ -347,6 +359,12 @@ function initWar() {
     }
     const pin = e.target.closest('[data-war-pin]');
     if (pin) { cmd('war.pin', Number(pin.dataset.warPin), pin.dataset.on === '1'); return; }
+    const cl = e.target.closest('[data-war-claim]');
+    if (cl) {
+      cl.disabled = true;
+      cmd('war.claim', Number(cl.dataset.warClaim), cl.dataset.on === '1').catch(() => { cl.disabled = false; });
+      return;
+    }
     const t = e.target.closest('[data-war-target]');
     if (t) { cmd('targets.add', t.dataset.warTarget).then(() => { t.textContent = 'Added'; t.disabled = true; }); return; }
     const wch = e.target.closest('[data-war-watch]');

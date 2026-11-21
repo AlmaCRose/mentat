@@ -27,6 +27,7 @@ const { TornApi } = require('./api');
 const { Store } = require('./store');
 const { PriceHistory } = require('./history');
 const { SyncFeature } = require('./sync');
+const { ClaimsFeature } = require('./features/claims');
 const { UserFeature } = require('./features/user');
 const { ChainFeature } = require('./features/chain');
 const { TargetsFeature, herePlace } = require('./features/targets');
@@ -96,6 +97,8 @@ function createCore(host) {
   if (host.migrated && host.migrated.length) sync.markDirty(host.migrated); // e.g. the new default theme, to your other devices
   const alerts = new AlertsFeature({ store, notify, user, chain, targets, war });
   // Casino tab: live odds come from the Mentat server (signed-in members).
+  // War claims, shared through the Mentat server (War tab → Claim).
+  const claims = new ClaimsFeature({ sync, war, viewing });
   const casino = new CasinoFeature({ api, store, viewing, server: (method, p) => { if (!sync.configured()) throw new Error('Sign in to Mentat to load live odds.'); return sync.req(method, p); } });
   casino.on('imported', () => sync.markDirty(['gamble.log']));
   // Planner: your plan for the next few days (synced); reminders fire from here.
@@ -104,7 +107,7 @@ function createCore(host) {
   // Profile pictures: free from the profiles Targets fetches anyway, the rest a few a minute.
   const avatars = new AvatarsFeature({ api, store, dataDir });
   targets.on('profile', (id, d) => avatars.put(id, d && d.profile_image));
-  const features = { user, chain, research, scout, war, targets, market, travel, bazaar, ffscouter, alerts, casino, planner, avatars, sync, ...(host.extraFeatures || {}) };
+  const features = { user, chain, research, scout, war, claims, targets, market, travel, bazaar, ffscouter, alerts, casino, planner, avatars, sync, ...(host.extraFeatures || {}) };
 
   // Settings changed on another device (from the Mentat server).
   function applySynced(changed) {
@@ -202,6 +205,7 @@ function createCore(host) {
     'war.refresh': () => war.refresh(),
     'war.watch': id => war.watch(id),
     'war.pin': (id, on) => war.pin(id, !!on),
+    'war.claim': (id, on) => claims.set(Number(id), !!on),
     'research.watch': id => research.research(id),
     'research.exportIntel': p => {
       if (!p || typeof p !== 'object' || typeof p.pdf !== 'string' || typeof p.html !== 'string') throw new Error('Nothing to export');

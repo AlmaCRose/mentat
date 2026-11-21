@@ -1350,6 +1350,7 @@ const RENDER = {
   alerts: () => renderSafe('alerts', renderAlerts),
   casino: () => renderSafe('casino', renderCasino),
   war: () => { renderSafe('war', renderWar); updateStackNag(); },
+  claims: () => renderSafe('war', renderWar),
   sync: () => { renderSync(); renderGate(); renderMembers(); renderAccountButton(); },
   updates: () => renderUpdates(),
 };

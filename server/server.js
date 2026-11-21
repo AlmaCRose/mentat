@@ -50,6 +50,7 @@ const { WarArchive } = require(path.join(LIB, 'warchive'));
 const { UNIT_SET, DATASETS, PULL_ONLY, MERGE, mergePlan, prunePlan, joinUnit } = require(path.join(LIB, 'syncmerge'));
 const { CloudBackup } = require('./cloudbackup');
 const { Members, tornWithKey } = require('./members');
+const { Claims } = require('./claims');
 const { Push } = require('./push');
 const { Odds } = require('./odds');
 
@@ -446,6 +447,9 @@ async function run(file) {
   const memberStores = new Map();
   const push = new Push({ dataDir: cfg.dataDir, secret: cfg.pushSecret, subject: cfg.publicUrl, log, members });
   const odds = new Odds({ key: cfg.oddsKey, dataDir: cfg.dataDir, log });
+  // War claims (War tab → Claim); the server's own enemy checks clear a claim when the hit lands.
+  const claims = new Claims();
+  war.on('members', (fid, list) => claims.observe(list));
   log(odds.configured() ? 'Live odds: on.' : 'Live odds: off (no odds_key).');
   members.onRevoke = (pid, why) => push.unsubscribe(pid, null, why);
   if (!push.enabled) log('Phone alerts are off: no push secret (credential push_secret).');
@@ -703,6 +707,22 @@ async function run(file) {
         return send(req, res, e.status || (e.tornCode !== undefined ? 400 : 500), { error: e.status || e.tornCode !== undefined ? e.message : 'Phone alerts failed. Try again.' });
       }
       return send(req, res, 404, { error: 'Not found' });
+    }
+
+    // War claims: who's going for which enemy, shared with everyone signed in here.
+    if (route === 'war/claims') {
+      if (!who.pid) return send(req, res, 400, { error: 'Sign in with your API key to share claims.' });
+      try {
+        if (req.method === 'GET') return send(req, res, 200, claims.list());
+        if (req.method === 'POST') {
+          const body = await readBody(req);
+          const name = (who.me && who.me.name) || (isOwnerPid(who.pid) && account ? account.name : '') || `#${who.pid}`;
+          return send(req, res, 200, claims.set(who.pid, name, body.target, !!body.claim));
+        }
+      } catch (e) {
+        return send(req, res, e.status || 500, { error: e.status ? e.message : 'Claims failed. Try again.' });
+      }
+      return send(req, res, 405, { error: 'Method not allowed' });
     }
 
     // Bookmaker odds for the Bookie helper (any signed-in member).

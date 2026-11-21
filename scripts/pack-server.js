@@ -6,7 +6,7 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..');
 const OUT = path.join(ROOT, 'dist', 'torn-desktop-server');
 const FILES = [
-  'server/server.js', 'server/cloudbackup.js', 'server/members.js', 'server/push.js', 'server/odds.js', 'server/README.md', 'server/torn-desktop-server.service',
+  'server/server.js', 'server/cloudbackup.js', 'server/members.js', 'server/push.js', 'server/odds.js', 'server/claims.js', 'server/README.md', 'server/torn-desktop-server.service',
   'src/main/store.js', 'src/main/api.js', 'src/main/history.js', 'src/main/restock.js', 'src/main/syncmerge.js',
   'src/main/features/war.js', 'src/main/features/research.js', 'src/main/features/travel.js',
   'src/main/features/market.js', 'src/main/features/bazaar.js', 'src/main/features/scout.js',

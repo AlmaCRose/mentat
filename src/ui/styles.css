@@ -950,3 +950,8 @@ a.btn.primary:hover { background: var(--accent); }
 /* Trip details: restock history for one item */
 .thist { gap: 16px; margin-top: 6px; }
 .thist-recent { margin-top: 6px; max-width: 520px; }
+
+/* War claims (war.js claimCell) */
+.war-table tr.claimed-row td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+.war-table .claim-list { white-space: normal; margin-top: 3px; line-height: 1.35; }
+.war-table button.claimed { font-weight: 700; box-shadow: inset 0 0 0 1px var(--accent); }
