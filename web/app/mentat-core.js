@@ -1,4 +1,4 @@
-// Mentat 0.1.23: the core for web browsers. Built by scripts/pack-web.js from src/main; don't edit.
+// Mentat 0.1.24: the core for web browsers. Built by scripts/pack-web.js from src/main; don't edit.
 (function () {
 'use strict';
 // Browser stand-ins for the Node and Electron modules Mentat's core uses (bundled into
@@ -555,7 +555,7 @@ const SETTABLE = {
   'chain.volume': num(0, 1), 'chain.minChain': num(0, 100000),
   'alerts.volume': num(0, 1), 'chain.sound': oneOf('soft', 'classic'),
   'chain.t150': bool, 'chain.t90': bool, 'chain.t60': bool, 'chain.t30': bool,
-  'targets.autoRefresh': bool, 'targets.interval': num(30, 3600), 'targets.notify': bool,
+  'targets.autoRefresh': bool, 'targets.interval': num(3, 3600), 'targets.notify': bool,
   'travel.yata': bool, 'travel.method': oneOf('auto', 'Standard', 'Airstrip', 'Private', 'Business'),
   'travel.capacity': num(0, 500), 'travel.sellMode': oneOf('market', 'live'), 'travel.feePct': num(0, 50),
   'travel.restockInterval': num(5, 240), 'travel.restockOffset': num(0, 239),
@@ -5024,7 +5024,9 @@ class TargetsFeature extends EventEmitter {
   isDue(t, s, now) {
     if (t.invalid) return false;
     if (t.force || !t.lastFetched) return true;
-    return s.autoRefresh && now - t.lastFetched >= Math.max(30, s.interval || 120) * 1000;
+    // As short as 3 s (the user's request, 2026-11-21); each refresh is one request per target, so the
+    // Targets tab shows the calls a minute this costs. The shared queue still keeps to your limit.
+    return s.autoRefresh && now - t.lastFetched >= Math.max(3, s.interval || 120) * 1000;
   }
 
   tick(now) {
@@ -6001,5 +6003,5 @@ function load(id) {
   DEFS[id].call(module.exports, module, module.exports, req);
   return module.exports;
 }
-window.Mentat = { version: "0.1.23", load: SHIMS.load, persistNow: SHIMS.persistNow, require: load, Buffer };
+window.Mentat = { version: "0.1.24", load: SHIMS.load, persistNow: SHIMS.persistNow, require: load, Buffer };
 })();

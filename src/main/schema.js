@@ -80,7 +80,7 @@ const SETTABLE = {
   'chain.volume': num(0, 1), 'chain.minChain': num(0, 100000),
   'alerts.volume': num(0, 1), 'chain.sound': oneOf('soft', 'classic'),
   'chain.t150': bool, 'chain.t90': bool, 'chain.t60': bool, 'chain.t30': bool,
-  'targets.autoRefresh': bool, 'targets.interval': num(30, 3600), 'targets.notify': bool,
+  'targets.autoRefresh': bool, 'targets.interval': num(3, 3600), 'targets.notify': bool,
   'travel.yata': bool, 'travel.method': oneOf('auto', 'Standard', 'Airstrip', 'Private', 'Business'),
   'travel.capacity': num(0, 500), 'travel.sellMode': oneOf('market', 'live'), 'travel.feePct': num(0, 50),
   'travel.restockInterval': num(5, 240), 'travel.restockOffset': num(0, 239),

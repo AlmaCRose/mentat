@@ -375,6 +375,7 @@ function renderTargetsShell() {
         </select></label>
         <span class="row"><button data-cmd="targets.refreshAll">Refresh all</button><button id="abroad-clear" class="danger">Clear list</button></span>
       </div>
+      <div id="target-rate" class="note"></div>
       <div id="target-msg" class="note"></div>
       <div id="abroad-list" style="margin-top:6px"></div>`;
     $('#target-sort').value = prefs.get('targets.sort', 'status');
@@ -399,9 +400,10 @@ function renderTargetsShell() {
     <div class="row between" style="margin-top:6px">
       <label class="row"><input type="checkbox" data-set="targets.autoRefresh"> Auto refresh every</label>
       <select data-set="targets.interval" data-num>
-        ${[60, 120, 300, 600, 1800].map(v => `<option value="${v}">${fmtDur(v)}</option>`).join('')}
+        ${TARGET_INTERVALS.map(v => `<option value="${v}">${intervalLabel(v)}</option>`).join('')}
       </select>
     </div>
+    <div id="target-rate" class="note" style="margin-top:2px"></div>
     <div class="row between" style="margin-top:6px">
       <label>Sort by <select id="target-sort">
         <option value="status">Status (ready first)</option>
@@ -441,6 +443,27 @@ document.addEventListener('click', e => {
   const s = e.target.closest('[data-tgsub]');
   if (s) { prefs.set('targets.sub', s.dataset.tgsub); renderTargetsShell(); }
 });
+
+// Auto refresh choices, and what they cost: one request per target per refresh.
+const TARGET_INTERVALS = [3, 5, 10, 15, 30, 60, 120, 300, 600, 1800];
+const intervalLabel = v => (v < 60 ? `${v} s` : v < 3600 ? `${v / 60} min` : `${v / 3600} h`);
+function renderTargetRate(f) {
+  const el = $('#target-rate');
+  if (!el) return;
+  const s = (S.settings && S.settings.targets) || {};
+  const n = f.targets.filter(t => !t.invalid).length;
+  if (!s.autoRefresh) { el.textContent = 'Auto refresh is off: targets update only when you press Refresh.'; return; }
+  const every = Math.max(3, Number(s.interval) || 120);
+  const perMin = n * 60 / every;
+  // What Targets can really get: this device's allowance (less what your other Mentat devices
+  // and the server use), and other tabs go first, so count on about 80% of it.
+  const budget = Math.max(1, Number(S.api.budget || S.api.maxPerMinute) || 40);
+  const room = budget * 0.8;
+  const est = `≈ ${perMin < 10 ? perMin.toFixed(1).replace(/.0$/, '') : Math.round(perMin)} calls/min for ${n} target${n === 1 ? '' : 's'} (both lists) at every ${intervalLabel(every)}`;
+  if (perMin <= room) { el.innerHTML = `${est} · fine for your ${budget}/min allowance.`; return; }
+  const real = Math.ceil(n * 60 / room);
+  el.innerHTML = `<b>${est}: more than your ${budget}/min allowance can take.</b> Each target will really update about every ${real < 60 ? `${real} s` : fmtDur(real)}. Torn allows 100 calls a minute across all your keys; Mentat keeps you under it by slowing down.`;
+}
 
 function targetRank(t, now) {
   if (t.invalid || !t.status) return [3, 0];
@@ -524,6 +547,7 @@ function renderTargets() {
   const f = S.features.targets;
   const el = panel('targets');
   if (!f || !el) return;
+  renderTargetRate(f);
   if (el.dataset.view === 'abroad') {
     const est0 = (S.features.ffscouter || {}).stats || {};
     const v0 = (t, k) => (est0[t.id] && est0[t.id][k] !== null && est0[t.id][k] !== undefined ? est0[t.id][k] : null);
@@ -1167,6 +1191,7 @@ function syncSettingInputs() {
   const condensed = new Set((S.settings.ui && S.settings.ui.condensed) || []);
   for (const sec of $$('#panels > section[data-panel]')) sec.classList.toggle('condensed', condensed.has(sec.dataset.panel));
   for (const cb of $$('[data-condense]')) cb.checked = condensed.has(cb.dataset.condense);
+  if (S.features.targets) renderTargetRate(S.features.targets); // the interval may have changed
   for (const input of $$('[data-set]')) {
     if (input === document.activeElement && input.type !== 'checkbox' && input.type !== 'color') continue;
     const v = input.dataset.set.split('.').reduce((o, k) => (o == null ? undefined : o[k]), S.settings);

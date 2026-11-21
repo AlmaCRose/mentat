@@ -178,7 +178,9 @@ class TargetsFeature extends EventEmitter {
   isDue(t, s, now) {
     if (t.invalid) return false;
     if (t.force || !t.lastFetched) return true;
-    return s.autoRefresh && now - t.lastFetched >= Math.max(30, s.interval || 120) * 1000;
+    // As short as 3 s (the user's request, 2026-11-21); each refresh is one request per target, so the
+    // Targets tab shows the calls a minute this costs. The shared queue still keeps to your limit.
+    return s.autoRefresh && now - t.lastFetched >= Math.max(3, s.interval || 120) * 1000;
   }
 
   tick(now) {
