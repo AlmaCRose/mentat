@@ -149,6 +149,8 @@ function createCore(host) {
     return {
       ui: store.get('ui'), api: { maxPerMinute: store.get('api.maxPerMinute') }, user: store.get('user'), chain: store.get('chain'),
       targets: { autoRefresh: store.get('targets.autoRefresh'), interval: store.get('targets.interval'), notify: store.get('targets.notify') },
+      // The War tab's dropdowns (without these they showed their first option after every redraw)
+      war: { interval: store.get('war.interval'), live: store.get('war.live') },
       travel: travelSettings, market: marketSettings,
       ffscouter: { intervalHours: store.get('ffscouter.intervalHours') },
       alerts: { volume: store.get('alerts.volume') },

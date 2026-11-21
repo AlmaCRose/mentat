@@ -107,7 +107,8 @@ function claimCell(m) {
   if (!c || !c.available) return '';
   const list = claimsFor(m.id);
   const mine = list.some(x => x.by === c.me);
-  const who = list.map((x, i) => `${i + 1}. ${x.by === c.me ? '<b>you</b>' : esc(x.name)} <span class="muted">${fmtAgo(x.at)}</span>`).join('<br>');
+  // One line, in claim order; it wraps only when there are many.
+  const who = list.map((x, i) => `<span class="nowrap">${i + 1}. ${x.by === c.me ? '<b>you</b>' : esc(x.name)} <span class="muted">${fmtAgo(x.at)}</span></span>`).join(' · ');
   return ` <button class="${mine ? 'claimed' : ''}" data-war-claim="${m.id}" data-on="${mine ? 0 : 1}" title="${mine ? 'Drop your claim' : 'Claim: everyone using Mentat sees you are going for them. It clears when they land in hospital, or after 15 minutes.'}">${mine ? 'Unclaim' : 'Claim'}</button>${list.length ? `<div class="small claim-list" title="Claimed, in order">${who}</div>` : ''}`;
 }
 
@@ -178,7 +179,7 @@ function memberRows(list, opts) {
         <td>${statusPill({ state: m.state, description: m.description }, m.until)}${statusDetail(m)}</td>
         <td>${lastActionDot(m)}</td>
         ${showStats ? `<td class="num">${s && s.bsHuman ? `<span class="est ${band ? band.cls : ''}" title="${band ? `${ratioText(band.ratio)} of your ${compactStat(mine)} (${band.label})` : 'Estimated total battle stats (FFScouter)'}">${esc(s.bsHuman)}</span><div class="muted small">${band ? `${ratioText(band.ratio)} · ` : ''}FF ${s.ff != null ? Number(s.ff).toFixed(2) : '–'}</div>` : '<span class="muted small">–</span>'}</td>` : ''}
-        <td class="nowrap">${opts.enemy ? `<button class="primary" data-open="${attackUrl(m.id)}" title="Open the attack page in a Torn tab">Attack</button> <button data-war-target="${m.id}" title="Add to your Targets list">+ Target</button>${claimCell(m)}` : ''}</td>
+        <td class="war-act">${opts.enemy ? `<div class="war-actions"><button class="primary" data-open="${attackUrl(m.id)}" title="Open the attack page in a Torn tab">Attack</button><button data-war-target="${m.id}" title="Add to your Targets list">+ Target</button>${claimCell(m)}</div>` : ''}</td>
       </tr>`;
     }).join('') || `<tr><td colspan="6" class="muted">No members match.</td></tr>`}
   </table></div>

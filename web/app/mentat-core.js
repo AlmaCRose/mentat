@@ -1,4 +1,4 @@
-// Mentat 0.1.24: the core for web browsers. Built by scripts/pack-web.js from src/main; don't edit.
+// Mentat 0.1.25: the core for web browsers. Built by scripts/pack-web.js from src/main; don't edit.
 (function () {
 'use strict';
 // Browser stand-ins for the Node and Electron modules Mentat's core uses (bundled into
@@ -325,6 +325,8 @@ function createCore(host) {
     return {
       ui: store.get('ui'), api: { maxPerMinute: store.get('api.maxPerMinute') }, user: store.get('user'), chain: store.get('chain'),
       targets: { autoRefresh: store.get('targets.autoRefresh'), interval: store.get('targets.interval'), notify: store.get('targets.notify') },
+      // The War tab's dropdowns (without these they showed their first option after every redraw)
+      war: { interval: store.get('war.interval'), live: store.get('war.live') },
       travel: travelSettings, market: marketSettings,
       ffscouter: { intervalHours: store.get('ffscouter.intervalHours') },
       alerts: { volume: store.get('alerts.volume') },
@@ -6003,5 +6005,5 @@ function load(id) {
   DEFS[id].call(module.exports, module, module.exports, req);
   return module.exports;
 }
-window.Mentat = { version: "0.1.24", load: SHIMS.load, persistNow: SHIMS.persistNow, require: load, Buffer };
+window.Mentat = { version: "0.1.25", load: SHIMS.load, persistNow: SHIMS.persistNow, require: load, Buffer };
 })();

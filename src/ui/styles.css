@@ -242,10 +242,12 @@ table.data tr.war-hit td:first-child { box-shadow: inset 3px 0 0 var(--green); }
 .war-chain .time { font-size: 34px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.15; margin: 2px 0; }
 /* Same column widths in the pinned list and the main list so they line up. */
 table.war-table { table-layout: fixed; width: 100%; }
-.war-table th:nth-child(1) { width: 29%; }
+.war-table th:nth-child(1) { width: 25%; }
 .war-table th:nth-child(2) { width: 6%; }
-.war-table th:nth-child(3) { width: 23%; }
-.war-table th:nth-child(4) { width: 15%; }
+.war-table th:nth-child(3) { width: 21%; }
+.war-table th:nth-child(4) { width: 13%; }
+/* Attack, + Target and Claim side by side where there's room (they wrap when there isn't) */
+.war-table th:last-child { width: 20%; }
 .war-table td { overflow: hidden; text-overflow: ellipsis; }
 .war-table th.war-sort { cursor: pointer; user-select: none; }
 .war-table th.war-sort:hover { color: var(--text); }
@@ -953,5 +955,8 @@ a.btn.primary:hover { background: var(--accent); }
 
 /* War claims (war.js claimCell) */
 .war-table tr.claimed-row td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
-.war-table .claim-list { white-space: normal; margin-top: 3px; line-height: 1.35; }
+/* Actions wrap onto a second line rather than being cut off (the table has fixed columns) */
+.war-table td.war-act { white-space: normal; overflow: visible; }
+.war-actions { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; align-items: center; }
+.war-actions .claim-list { flex-basis: 100%; text-align: right; white-space: normal; margin-top: 1px; line-height: 1.35; }
 .war-table button.claimed { font-weight: 700; box-shadow: inset 0 0 0 1px var(--accent); }
