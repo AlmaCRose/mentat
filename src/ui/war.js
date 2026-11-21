@@ -138,8 +138,11 @@ function memberRows(list, opts) {
   // Each column's natural order. With a second sort column, Status only groups (hittable,
   // hospital, jail, traveling, abroad) and the second column orders within each group.
   const sec = opts.sort2 && opts.sort2 !== opts.sort ? opts.sort2 : '';
+  const timed = m => m.state === 'Hospital' || m.state === 'Jail' || m.state === 'Traveling';
   const sorters = {
-    status: (a, b) => rank(a) - rank(b) || (sec ? 0 : nextAt(a) - nextAt(b) || actRank(a) - actRank(b) || b.level - a.level),
+    // Hospital and jail always go by earliest release, travellers by earliest landing, even with a
+    // second sort column (the user's request, 2026-11-21); the second sort orders the rest.
+    status: (a, b) => rank(a) - rank(b) || (timed(a) ? nextAt(a) - nextAt(b) : 0) || (sec ? 0 : nextAt(a) - nextAt(b) || actRank(a) - actRank(b) || b.level - a.level),
     out: (a, b) => (a.state === 'Hospital' ? a.until : Infinity) - (b.state === 'Hospital' ? b.until : Infinity) || rank(a) - rank(b),
     level: (a, b) => b.level - a.level,
     stats: (a, b) => bs(a) - bs(b),

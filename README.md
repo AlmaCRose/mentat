@@ -34,7 +34,7 @@ The icons in `src/assets/` are made from the transparent Mentat symbol.
 | Path | What it does |
 |---|---|
 | `src/main/main.js` | Window, layout, keyboard shortcuts, right-click menu, commands from the UI |
-| `src/main/tabs.js` | Browser tabs. Plain sandboxed Chromium views of torn.com (see the two exceptions under Rules) |
+| `src/main/tabs.js` | Browser tabs. Plain sandboxed Chromium views of torn.com (see the exceptions under Rules) |
 | `src/main/api.js` | The only Torn API client. One shared queue, rate-capped (default 40/min), error backoff, key encrypted with Windows DPAPI |
 | `src/main/features/*.js` | One module per feature. Each has `tick(now)` (called every second), `snapshot()`, and emits `state` |
 | `src/ui/` | The tab strip, address bar and sidebar (plain HTML/CSS/JS, no build step) |
@@ -45,12 +45,16 @@ To add a feature, create a module in `src/main/features/`, register it in `featu
 ## Rules this app follows
 
 - Torn pages load like a normal browser. The app never makes non-API requests to torn.com or
-  performs game actions, and it doesn't read or change Torn pages, with two exceptions you
-  choose to use:
+  performs game actions, and it doesn't read or change Torn pages, with these exceptions, each
+  tied to something you choose:
   - the chat window's compact view (`chatwin.compact`) hides parts of Torn's chat page; display only.
   - right-click a player's link → **Add all players in this list to targets** reads the player
     links of that one list, once, when you pick it (`src/main/playerlist.js`, run in an isolated
     world). Nothing on the page changes.
+  - with chat hidden in Torn tabs (`chatwin.hideInBrowser`), a listener in an isolated world waits
+    for the one event a profile's **start a chat** button sends (`chat.openChannel`: player ID and
+    name) and passes it to the chat window, where Torn's own chat opens that conversation.
+    Nothing else on the page is read.
 - All data comes from `api.torn.com`, through one rate-limited queue.
 - Data and the key stay on this PC.
 

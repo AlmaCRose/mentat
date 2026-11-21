@@ -346,6 +346,27 @@ class ChatWindow extends EventEmitter {
 
   // Types text into whatever is focused in the page (the chat box you last clicked), like
   // the keyboard does. Torn's page isn't read or changed; you still press Enter to send.
+  // Open a private chat with a player in Torn's own chat: the same "chat.openChannel" event
+  // Torn's profile button sends (for "Start a chat" clicked in a Torn tab while chat is hidden
+  // there; main.js). Opens or brings up the chat window and waits for Torn's chat to load first.
+  async openChannel(userId, nickname) {
+    this.show();
+    const wc = this.view && this.view.webContents;
+    if (!wc) return false;
+    const detail = { userId: String(userId), nickname: String(nickname || ''), sourceElementId: null };
+    for (let i = 0; i < 40; i++) {
+      if (wc.isDestroyed()) return false;
+      const ready = await wc.executeJavaScript("!!document.querySelector('#chatRoot')").catch(() => false);
+      if (ready) {
+        if (i) await new Promise(r => setTimeout(r, 600)); // it just loaded: let the chat start up
+        await wc.executeJavaScript(`window.dispatchEvent(new CustomEvent('chat.openChannel', { detail: ${JSON.stringify(detail)} })); 1`).catch(() => {});
+        return true;
+      }
+      await new Promise(r => setTimeout(r, 500));
+    }
+    return false;
+  }
+
   insert(text) {
     if (!this.isOpen()) return;
     const wc = this.view.webContents;

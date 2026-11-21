@@ -1,4 +1,4 @@
-// Mentat 0.1.25: the core for web browsers. Built by scripts/pack-web.js from src/main; don't edit.
+// Mentat 0.1.26: the core for web browsers. Built by scripts/pack-web.js from src/main; don't edit.
 (function () {
 'use strict';
 // Browser stand-ins for the Node and Electron modules Mentat's core uses (bundled into
@@ -6005,5 +6005,5 @@ function load(id) {
   DEFS[id].call(module.exports, module, module.exports, req);
   return module.exports;
 }
-window.Mentat = { version: "0.1.25", load: SHIMS.load, persistNow: SHIMS.persistNow, require: load, Buffer };
+window.Mentat = { version: "0.1.26", load: SHIMS.load, persistNow: SHIMS.persistNow, require: load, Buffer };
 })();

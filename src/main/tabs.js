@@ -56,8 +56,9 @@ function loadTornUrl(wc, url) {
 }
 
 class Tabs extends EventEmitter {
-  constructor({ win, session, getZoom, onInput, onContextMenu }) {
+  constructor({ win, session, getZoom, onInput, onContextMenu, onPageReady = null }) {
     super();
+    this.onPageReady = onPageReady; // (webContents) on each page load (main.js: the chat link)
     this.win = win;
     this.session = session;
     this.getZoom = getZoom;
@@ -102,6 +103,7 @@ class Tabs extends EventEmitter {
       tab.title = wc.getTitle() || tab.title;
       this.changed();
     };
+    wc.on('dom-ready', () => { if (this.onPageReady) this.onPageReady(wc); });
     wc.on('page-title-updated', update);
     wc.on('did-navigate', update);
     wc.on('did-navigate-in-page', update);

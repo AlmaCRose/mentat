@@ -140,7 +140,32 @@ function start() {
     preload: PRELOAD,
     onContextMenu: showContextMenu,
     onShortcut: browserShortcut,
+    onPageReady: wc => linkProfileChat(wc),
   });
+  // "Start a chat" on a player's profile while chat is hidden in Torn tabs (the user's request,
+  // 2026-11-21). Torn's profile button only sends a "chat.openChannel" event to the page's chat,
+  // which isn't loaded in tabs then. A listener in an isolated world (Torn's scripts can't see
+  // it) catches that one event, and the chat window gets the same event, so Torn's own chat
+  // opens the conversation there. Nothing else on the page is read.
+  const CHAT_WORLD = 1002;
+  const CHAT_TAG = '__mentat_chat__';
+  const CHAT_LISTENER = `window.addEventListener('chat.openChannel', e => { const d = e.detail || {}; console.debug(${JSON.stringify(CHAT_TAG)} + JSON.stringify({ userId: String(d.userId || ''), nickname: String(d.nickname || '') })); }); 1`;
+  const chatLinked = new WeakSet();
+  function linkProfileChat(wc) {
+    if (store.get('chatwin.hideInBrowser') === false) return; // chat runs in the tab itself then
+    wc.executeJavaScriptInIsolatedWorld(CHAT_WORLD, [{ code: CHAT_LISTENER }]).catch(() => {});
+    if (chatLinked.has(wc)) return;
+    chatLinked.add(wc);
+    wc.on('console-message', e => {
+      const m = String((e && e.message) || '');
+      if (!m.startsWith(CHAT_TAG)) return;
+      let d;
+      try { d = JSON.parse(m.slice(CHAT_TAG.length)); } catch (err) { return; }
+      const id = Number(d.userId);
+      if (!Number.isInteger(id) || id <= 0) return;
+      chatwin.openChannel(id, String(d.nickname || '').slice(0, 40)).catch(err => console.error('Open chat:', err.message));
+    });
+  }
   browser.on('tabs', () => sendTool('browser', browserState()));
   browser.on('closed', () => sendTool('browser', browserState()));
   const browserState = () => ({ open: browser.isOpen(), tabs: browser.tabs ? browser.tabs.tabs.length : 0, url: browser.activeUrl() });

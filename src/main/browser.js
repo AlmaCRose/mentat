@@ -19,8 +19,9 @@ function onScreen(b) {
 }
 
 class TornBrowser extends EventEmitter {
-  constructor({ store, session, preload, onContextMenu, onShortcut }) {
+  constructor({ store, session, preload, onContextMenu, onShortcut, onPageReady = null }) {
     super();
+    this.onPageReady = onPageReady;
     this.store = store;
     this.session = session;
     this.preload = preload;
@@ -66,6 +67,7 @@ class TornBrowser extends EventEmitter {
       getZoom: () => this.store.get('ui.zoom') || 0,
       onInput: (e, input) => this.onShortcut(e, input, this),
       onContextMenu: (tab, params) => this.onContextMenu(tab, params, this),
+      onPageReady: wc => this.onPageReady && this.onPageReady(wc),
     });
     tabs.on('changed', () => {
       this.send('tabs', tabs.list());
