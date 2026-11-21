@@ -6,7 +6,7 @@ const DEFAULTS = {
   window: { bounds: null, maximized: false },
   browser: { bounds: null, maximized: false },
   chatwin: { bounds: null, bubble: null, onTop: true, minimizeToBubble: true, compact: true, hideInBrowser: true, zoom: 0, emojis: '😂 👍 ❤️ 😭 🙏 🔥 💀 👀 🎉 😅' },
-  ui: { panel: 'overview', zoom: 0, openTornOnStart: false, closeToTray: true, trayHintShown: false, clockZone: 'America/New_York', clockThird: false, clock24: true, avatars: true, browserClocks: true, popupStyle: 'windows', popupSeconds: 12, popupCorner: 'bottom-right', navLayout: 'top', navCollapsed: false, theme: 'mentat', accent: '' },
+  ui: { panel: 'overview', zoom: 0, openTornOnStart: false, closeToTray: true, trayHintShown: false, clockZone: 'America/New_York', clockThird: false, clock24: true, avatars: true, browserClocks: true, popupStyle: 'app', popupSeconds: 12, popupCorner: 'bottom-right', navLayout: 'top', navCollapsed: false, theme: 'mentat', accent: '' },
   session: { urls: [], active: 0 },
   api: { keyEnc: '', account: null, maxPerMinute: 40 },
   user: {
@@ -32,7 +32,7 @@ const DEFAULTS = {
   // Pop-out tabs (popouts.js): open ones, window and bubble places, collapsed / on top.
   popouts: { open: [], bounds: {}, bubble: {}, collapsed: {}, onTop: {}, minimizeToBubble: true },
   // Data source: 'local' (this PC) or 'server' (a Mentat sync server). Secrets are DPAPI-encrypted.
-  sync: { mode: 'local', url: '', tokenEnc: '', cfIdEnc: '', cfSecretEnc: '', serverId: '', joinedId: '', settingsRev: 0, dirty: [] },
+  sync: { mode: 'local', url: '', tokenEnc: '', cfIdEnc: '', cfSecretEnc: '', serverId: '', joinedId: '', settingsRev: 0, dirty: [], deviceId: '' },
 };
 
 const TIME_ZONES = new Set(Intl.supportedValuesOf('timeZone'));
@@ -100,6 +100,7 @@ const TABS = ['overview', 'chain', 'research', 'faction', 'war', 'targets', 'tra
 const TAB_LABELS = {
   overview: 'Overview', chain: 'Chain', targets: 'Targets', faction: 'My Faction', war: 'War', research: 'Oppo Research',
   market: 'Market', travel: 'Travel', planner: 'Planner', casino: 'Casino', alerts: 'Alerts', settings: 'Settings',
+  'targets:list': 'Targets', 'targets:abroad': 'Abroad',
   'research:overview': 'Research', 'research:report': 'War report', 'research:scout': 'Scouting',
   'travel:timed': 'Timed trips', 'travel:plan': 'Leave now', 'travel:items': 'Abroad items', 'travel:sell': 'Sell abroad', 'travel:flights': 'Flights & settings',
   'casino:blackjack': 'Blackjack', 'casino:poker': 'Poker', 'casino:highlow': 'High-Low', 'casino:games': 'Other games', 'casino:bookie': 'Bookie', 'casino:tracker': 'Tracker',
@@ -121,6 +122,10 @@ DEFAULTS.ui.setupDone = false;
 // Top bar buttons (and the clocks); false hides one. Ctrl+D and Ctrl+K work either way.
 DEFAULTS.ui.buttons = { torn: true, pages: true, chat: true, clocks: true, account: true };
 SETTABLE['ui.setupDone'] = bool;
+// Condensed tabs: no profile pictures, faction tags or banners in these tabs (right-click a tab,
+// or Settings → Customization). Synced, like the rest of the tab layout.
+DEFAULTS.ui.condensed = [];
+SETTABLE['ui.condensed'] = v => Array.isArray(v) && v.length <= TABS.length && new Set(v).size === v.length && v.every(x => TABS.includes(x));
 for (const k of Object.keys(DEFAULTS.ui.buttons)) SETTABLE[`ui.buttons.${k}`] = bool;
 DEFAULTS.updates = { auto: true }; // check the Mentat server for new versions (installed copies)
 DEFAULTS.ui.themeDark = 'mentat';

@@ -19,6 +19,13 @@ const API_COMMENT = 'Mentat';
 const MIN_GAP_MS = 1000;
 const TIMEOUT_MS = 15000;
 const KEY_PATTERN = /^[A-Za-z0-9]{16}$/;
+// "Each user can make up to 100 individual requests per minute across all of their keys"
+// (torn.com/api.html). The calls your other Mentat devices and the Mentat server make with your
+// key count too (reported by the server, see setOthers), so all of them together stay under this.
+const TORN_LIMIT = 100;
+const ALL_MENTAT_MAX = 95; // leaves a little room for other tools
+const MIN_BUDGET = 5; // this device never stops completely
+const OTHERS_FRESH_MS = 150e3; // a report older than this no longer counts
 
 // Errors that mean the key itself is unusable: remove it and stop.
 const KEY_ERRORS = {
@@ -59,6 +66,7 @@ class TornApi extends EventEmitter {
     this.timer = null;
     this.pausedUntil = 0;
     this.banner = '';
+    this.others = null; // { n, detail, at }: calls made elsewhere with this player's key, last minute
   }
 
   // ---- Key ----
@@ -126,8 +134,34 @@ class TornApi extends EventEmitter {
       pausedUntil: this.pausedUntil > now ? this.pausedUntil : 0,
       usedLastMinute: this.log.filter(t => now - t < 60000).length,
       maxPerMinute: this.maxPerMinute(),
+      budget: this.budget(),
+      // null until the Mentat server reports; then calls elsewhere and everything together
+      others: this.othersFresh() ? this.others.n : null,
+      othersDetail: this.othersFresh() ? this.others.detail : null,
+      total: this.othersFresh() ? this.others.n + this.log.filter(t => now - t < 60000).length : null,
+      tornLimit: TORN_LIMIT,
       queued: this.queue.length,
     };
+  }
+
+  // Calls made with this player's key elsewhere in the last minute (other Mentat devices, the
+  // Mentat server). This device then uses only what's left under ALL_MENTAT_MAX.
+  setOthers(n, detail = null) {
+    const v = Math.max(0, Math.round(Number(n) || 0));
+    const changed = !this.othersFresh() || this.others.n !== v || JSON.stringify(this.others.detail) !== JSON.stringify(detail);
+    this.others = { n: v, detail, at: Date.now() };
+    if (changed) { this.emit('status'); this.pump(); }
+  }
+
+  othersFresh() {
+    return !!this.others && Date.now() - this.others.at < OTHERS_FRESH_MS;
+  }
+
+  // Requests this device may make per minute right now.
+  budget() {
+    const own = this.maxPerMinute();
+    if (!this.othersFresh()) return own;
+    return Math.max(MIN_BUDGET, Math.min(own, ALL_MENTAT_MAX - this.others.n));
   }
 
   maxPerMinute() {
@@ -157,7 +191,8 @@ class TornApi extends EventEmitter {
     const now = Date.now();
     this.log = this.log.filter(t => now - t < 60000);
     let wait = this.lastAt + MIN_GAP_MS - now;
-    if (this.log.length >= this.maxPerMinute()) wait = Math.max(wait, 60000 - (now - this.log[0]) + 50);
+    const budget = this.budget();
+    if (this.log.length >= budget) wait = Math.max(wait, 60000 - (now - this.log[this.log.length - budget]) + 50);
     if (wait > 0) {
       this.timer = setTimeout(() => { this.timer = null; this.pump(); }, wait);
       return;

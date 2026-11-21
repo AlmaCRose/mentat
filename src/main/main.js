@@ -24,6 +24,7 @@ const { createCore } = require('./core');
 const { ActivityStore } = require('./activity');
 const { WarArchive } = require('./warchive');
 const { exportResearch, exportIntel } = require('./export');
+const { readPlayerList } = require('./playerlist');
 
 const PRELOAD = path.join(__dirname, '..', 'preload', 'ui.js');
 const { APP_ICON, brandWindow } = require('./brand');
@@ -502,6 +503,42 @@ function start() {
   });
 
   // ---- Right-click menu in Torn pages ----
+  // "Add all players in this list to targets" (the user's request, 2026-11-21): the one place
+  // besides the chat trimming where Mentat reads a Torn page, and only when you pick it. It runs
+  // once in an isolated world (Torn's scripts can't see or change it), reads the player links of
+  // the list around the link you right-clicked, and changes nothing on the page.
+  const LIST_WORLD = 1001;
+  // While you're abroad (or flying out) these go to the Abroad list, else to Targets.
+  async function addListPlayers(wc, p, which) {
+    const z = wc.getZoomFactor() || 1;
+    let r = null;
+    try {
+      r = await wc.executeJavaScriptInIsolatedWorld(LIST_WORLD, [{ code: `(${readPlayerList.toString()})(${Math.round(p.x / z)}, ${Math.round(p.y / z)}, ${JSON.stringify(p.linkURL)})` }]);
+    } catch (e) { console.error('Read player list:', e.message); }
+    const players = r && Array.isArray(r.players) ? r.players : [];
+    const meId = ((core.api.status().account) || {}).id || 0;
+    const own = core.war.state.own ? core.war.state.own.id : 0;
+    const keep = players.filter(x => x.id !== meId && !(own && x.factionId === own));
+    if (!keep.length) {
+      notify('Targets', players.length ? 'Nobody to add: everyone in that list is you or in your faction.' : "Couldn't find a list of players around that link.", '');
+      return;
+    }
+    core.ffscouter.refreshSoon();
+    const res = targets.addPlayers(keep, 'list', which);
+    const already = keep.length - res.added;
+    const skipped = players.length - keep.length;
+    const notes = [];
+    if (already) notes.push(res.full ? `${already} not added: already listed or the list is full at 250` : `${already} already listed`);
+    if (skipped) notes.push(`${skipped} skipped (you or your faction)`);
+    notify('Targets', `Added ${res.added} player${res.added === 1 ? '' : 's'} to ${which === 'abroad' ? 'the Abroad list' : 'Targets'}${notes.length ? `; ${notes.join(', ')}` : ''}.`, '');
+  }
+  // One player from a right-click: says so when they're already listed (nobody is listed twice).
+  function addOnePlayer(id, which) {
+    const label = which === 'abroad' ? 'the Abroad list' : 'Targets';
+    const res = which === 'abroad' ? targets.addPlayers([{ id }], '', 'abroad') : targets.add(String(id));
+    notify('Targets', res.added ? `Added player ${id} to ${label}.` : `Player ${id} is already on ${label}.`, '');
+  }
+
   function showContextMenu(tab, p, b) {
     const wc = tab.view.webContents;
     const items = [];
@@ -512,7 +549,12 @@ function start() {
         { label: 'Copy link address', click: () => clipboard.writeText(p.linkURL) },
       );
       if (id && /profiles\.php|user2ID=/i.test(p.linkURL)) {
-        items.push({ label: `Add player ${id} to targets`, click: () => targets.add(String(id)) });
+        const which = targets.here() ? 'abroad' : 'home';
+        const to = which === 'abroad' ? 'Abroad targets' : 'targets';
+        items.push(
+          { label: `Add player ${id} to ${to}`, click: () => addOnePlayer(id, which) },
+          { label: `Add all players in this list to ${to}`, click: () => addListPlayers(wc, p, which).catch(e => console.error('Add list players:', e)) },
+        );
       }
       items.push({ type: 'separator' });
     }
@@ -522,7 +564,7 @@ function start() {
       items.push({ role: 'copy' }, { type: 'separator' });
     }
     const pageId = idFromUrl(tab.url);
-    if (pageId && !p.linkURL) items.push({ label: `Add player ${pageId} to targets`, click: () => targets.add(String(pageId)) }, { type: 'separator' });
+    if (pageId && !p.linkURL) { const which = targets.here() ? 'abroad' : 'home'; items.push({ label: `Add player ${pageId} to ${which === 'abroad' ? 'Abroad targets' : 'targets'}`, click: () => addOnePlayer(pageId, which) }, { type: 'separator' }); }
     items.push(
       { label: 'Back', enabled: wc.navigationHistory.canGoBack(), click: () => wc.navigationHistory.goBack() },
       { label: 'Forward', enabled: wc.navigationHistory.canGoForward(), click: () => wc.navigationHistory.goForward() },

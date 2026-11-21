@@ -7,7 +7,7 @@
 // settings themselves, and anything that's only a cache.
 const SYNC_UNITS = [
   'ui.theme', 'ui.themeAuto', 'ui.themeDark', 'ui.themeLight', 'ui.accent', 'ui.clockZone', 'ui.clockThird', 'ui.clock24', 'ui.browserClocks',
-  'ui.popupStyle', 'ui.popupSeconds', 'ui.popupCorner', 'ui.navLayout', 'ui.navCollapsed', 'ui.tabLayout', 'ui.nav',
+  'ui.popupStyle', 'ui.popupSeconds', 'ui.popupCorner', 'ui.navLayout', 'ui.navCollapsed', 'ui.tabLayout', 'ui.nav', 'ui.condensed',
   'ui.setupDone', 'ui.buttons',
   'user.interval', 'user.notify',
   'chain.enabled', 'chain.alerts', 'chain.desktop', 'chain.sound', 'chain.volume', 'chain.minChain',

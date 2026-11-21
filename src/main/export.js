@@ -52,7 +52,9 @@ async function renderImage(cardHtml) {
 
 async function exportResearch(p, parent) {
   const img = await renderImage(p.overview);
-  clipboard.writeImage(img);
+  // Electron 45's clipboard takes ClipboardItems (writeImage is gone).
+  const ClipItem = require('electron').ClipboardItem || globalThis.ClipboardItem;
+  await clipboard.write([new ClipItem({ 'image/png': new Blob([img.toPNG()], { type: 'image/png' }) })]);
   if (p.mode !== 'all') return { copied: true };
   const date = new Date().toISOString().slice(0, 10);
   const r = await dialog.showSaveDialog(parent, {

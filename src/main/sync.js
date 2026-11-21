@@ -49,9 +49,14 @@ function cleanUrl(u) {
 }
 
 class SyncFeature extends EventEmitter {
-  constructor({ store, research, travel, war, history, scout = null, onSettings, version, defaultServer = '' }) {
+  constructor({ store, research, travel, war, history, scout = null, onSettings, version, defaultServer = '', api = null }) {
     super();
     this.store = store;
+    // Torn counts every call made with your key, from any device or the server, against one
+    // limit. Each status check tells the server how many calls this device made in the last
+    // minute; the server answers with the calls made elsewhere (api.setOthers).
+    this.api = api;
+    if (!this.store.get('sync.deviceId')) this.store.set('sync.deviceId', `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`);
     this.defaultServer = defaultServer; // the server this build signs in to unless another is entered
     this.signedOut = this.store.get('sync.signedOut') || ''; // why a member session ended
     this.me = this.store.get('sync.me') || null;
@@ -231,6 +236,10 @@ class SyncFeature extends EventEmitter {
     const headers = { Authorization: `Bearer ${this.secret('token')}`, Accept: 'application/json', 'Accept-Encoding': 'gzip', 'User-Agent': 'Mentat' };
     const cfId = this.secret('cfId'), cfSecret = this.secret('cfSecret');
     if (cfId && cfSecret) { headers['CF-Access-Client-Id'] = cfId; headers['CF-Access-Client-Secret'] = cfSecret; }
+    if (p === 'status') {
+      headers['X-Mentat-Device'] = this.store.get('sync.deviceId') || '';
+      if (this.api) headers['X-Mentat-Used'] = String(this.api.status().usedLastMinute);
+    }
     let payload;
     if (body !== null) {
       headers['Content-Type'] = 'application/json';
@@ -287,6 +296,8 @@ class SyncFeature extends EventEmitter {
       }
       const wasCovering = this.covering(now);
       this.server = st;
+      // Calls made with this player's key elsewhere (older servers don't report them).
+      if (this.api && st.usage) this.api.setOthers((st.usage.server || 0) + (st.usage.push || 0) + (st.usage.devices || 0), st.usage);
       this.lastOkAt = Date.now();
       this.error = '';
       await this.syncSettings(st);

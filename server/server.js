@@ -449,6 +449,46 @@ async function run(file) {
   log(odds.configured() ? 'Live odds: on.' : 'Live odds: off (no odds_key).');
   members.onRevoke = (pid, why) => push.unsubscribe(pid, null, why);
   if (!push.enabled) log('Phone alerts are off: no push secret (credential push_secret).');
+
+  // ---- Torn API calls per player ----
+  // "Each user can make up to 100 individual requests per minute across all of their keys"
+  // (torn.com/api.html). Every Mentat device reports its own calls of the last minute with its
+  // status check; the server adds the calls it makes with that player's key (the server key is
+  // the owner's; phone alerts use each member's own key) and answers with the total made
+  // elsewhere, so each device, and this server's own queue, leaves room for the rest.
+  const usage = { devices: new Map(), push: new Map() }; // pid -> Map(device -> { n, at }) / [times]
+  const USAGE_FRESH = 150e3;
+  function noteDevice(pid, device, used) {
+    const n = Math.round(Number(used));
+    if (!device || !/^[\w-]{1,64}$/.test(device) || !Number.isFinite(n) || n < 0 || n > 1000) return;
+    const now = Date.now();
+    let m = usage.devices.get(pid);
+    if (!m) usage.devices.set(pid, (m = new Map()));
+    for (const [d, r] of m) if (now - r.at > USAGE_FRESH) m.delete(d);
+    if (m.size >= 20 && !m.has(device)) return;
+    m.set(device, { n, at: now });
+  }
+  function tornCounted(key, p, pid) {
+    if (pid) {
+      const now = Date.now();
+      usage.push.set(pid, (usage.push.get(pid) || []).filter(t => now - t < 60e3).concat(now));
+    }
+    return tornWithKey(key, p);
+  }
+  const pushCalls = pid => (usage.push.get(pid) || []).filter(t => Date.now() - t < 60e3).length;
+  // Other devices' reports, leaving out the asking device.
+  function deviceCalls(pid, except) {
+    const now = Date.now();
+    let n = 0, count = 0;
+    for (const [d, r] of usage.devices.get(pid) || []) if (d !== except && now - r.at < USAGE_FRESH) { n += r.n; count++; }
+    return { n, count };
+  }
+  function usageFor(pid, device) {
+    const d = deviceCalls(pid, device);
+    return { server: isOwnerPid(pid) ? api.status().usedLastMinute : 0, push: pushCalls(pid), devices: d.n, deviceCount: d.count, limit: 100 };
+  }
+  // What this server's own queue must leave room for: the owner's devices and phone alerts.
+  const othersOf = pid => deviceCalls(pid, null).n + pushCalls(pid);
   const memberSettings = pid => {
     if (!memberStores.has(pid)) memberStores.set(pid, memberSettingsStore(cfg.dataDir, pid));
     return memberStores.get(pid);
@@ -529,7 +569,8 @@ async function run(file) {
     for (const f of loops) { try { f.tick(now); } catch (e) { log('Collector error:', e.stack || e.message); } }
     try { cloud.tick(now); } catch (e) { log('Cloud backup error:', e.message); }
     members.tick(now).catch(e => log('Members check error:', e.message));
-    push.tick(now, tornWithKey).catch(e => log('Phone alerts error:', e.message));
+    if (account) api.setOthers(othersOf(account.id, null));
+    push.tick(now, tornCounted).catch(e => log('Phone alerts error:', e.message));
   }, 1000);
 
   const SETS = {
@@ -543,7 +584,7 @@ async function run(file) {
   const revOf = name => `${boot}.${SETS[name].store.rev}`;
   const cache2 = {}; // name -> { rev, json, gz }
 
-  function status(who) {
+  function status(who, device = '') {
     const r = war.ranked();
     const full = who && (who.owner || who.admin);
     return {
@@ -560,6 +601,7 @@ async function run(file) {
       prices: { catalogAt: (cache.get('items') || {}).fetchedAt || 0 },
       cloudBackup: full ? cloud.status() : null,
       me: who ? who.me : null,
+      usage: who && who.pid ? usageFor(who.pid, device) : null,
       scout: (() => { const v = scout.view(); return { pool: v.pool.length, interval: v.interval, samplesLastHour: v.samplesLastHour, own: v.own, error: v.error || v.ladderError, activity: v.activity, archive: v.archive }; })(),
     };
   }
@@ -638,7 +680,11 @@ async function run(file) {
       if (!who.owner) members.logout(given);
       return send(req, res, 200, { ok: true });
     }
-    if (route === 'status' && req.method === 'GET') return send(req, res, 200, status(who));
+    if (route === 'status' && req.method === 'GET') {
+      const device = String(req.headers['x-mentat-device'] || '').slice(0, 64);
+      if (who.pid) noteDevice(who.pid, device, req.headers['x-mentat-used']);
+      return send(req, res, 200, status(who, device));
+    }
 
     // Phone alerts while Mentat is closed (opt-in): for members' own devices.
     if (route.startsWith('push/')) {
@@ -648,7 +694,7 @@ async function run(file) {
         if (route === 'push/config' && req.method === 'GET') return send(req, res, 200, push.config(pid));
         if (req.method === 'POST') {
           const body = await readBody(req);
-          if (route === 'push/subscribe') return send(req, res, 200, await push.subscribe(pid, body, tornWithKey));
+          if (route === 'push/subscribe') return send(req, res, 200, await push.subscribe(pid, body, tornCounted));
           if (route === 'push/prefs') return send(req, res, 200, push.setPrefs(pid, body.prefs));
           if (route === 'push/unsubscribe') return send(req, res, 200, push.unsubscribe(pid, typeof body.endpoint === 'string' ? body.endpoint : null));
           if (route === 'push/test') return send(req, res, 200, { sent: await push.test(pid) });

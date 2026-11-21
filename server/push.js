@@ -114,7 +114,7 @@ class Push {
     }
     const key = String(body.key || '').replace(/[^A-Za-z0-9]/g, '');
     if (!KEY_PATTERN.test(key)) throw Object.assign(new Error('Your API key is needed for alerts while Mentat is closed.'), { status: 400 });
-    const me = await torn(key, '/user/?selections=basic');
+    const me = await torn(key, '/user/?selections=basic', pid);
     if (Number(me.player_id) !== Number(pid)) throw Object.assign(new Error('That API key belongs to someone else.'), { status: 403 });
     const m = this.data.members[pid] || { subs: [], prefs: { ...DEFAULT_PREFS }, since: Date.now() };
     m.keyEnc = this.sealKey(key);
@@ -184,7 +184,7 @@ class Push {
     try { key = this.openKey(m.keyEnc); } catch (e) { this.unsubscribe(pid, null, "the stored key couldn't be read"); return; }
     let u;
     try {
-      u = await torn(key, '/v2/user?selections=bars,cooldowns,travel');
+      u = await torn(key, '/v2/user?selections=bars,cooldowns,travel', pid);
     } catch (e) {
       if ([2, 10, 13, 18].includes(e.tornCode)) {
         await this.send(pid, { title: 'Mentat', body: 'Phone alerts stopped: Torn no longer accepts your API key. Turn them on again in Mentat with a working key.', url: '/app/' });

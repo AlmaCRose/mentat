@@ -87,7 +87,7 @@
 
   // ---- Alerts: a system notification when allowed and the page isn't on screen, else in the page ----
   function notify(title, body, url) {
-    const style = core ? core.store.get('ui.popupStyle') : 'windows';
+    const style = core ? core.store.get('ui.popupStyle') : 'app';
     if ('Notification' in window && Notification.permission === 'granted' && (document.hidden || style === 'windows')) {
       try {
         const n = new Notification(title, { body, icon: '/assets/mentat-mark.png', tag: `mentat-${title}` });

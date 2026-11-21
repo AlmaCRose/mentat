@@ -205,7 +205,7 @@ const { PriceHistory } = require('./history');
 const { SyncFeature } = require('./sync');
 const { UserFeature } = require('./features/user');
 const { ChainFeature } = require('./features/chain');
-const { TargetsFeature } = require('./features/targets');
+const { TargetsFeature, herePlace } = require('./features/targets');
 const { MarketFeature } = require('./features/market');
 const { TravelFeature } = require('./features/travel');
 const { BazaarFeature } = require('./features/bazaar');
@@ -228,7 +228,8 @@ function createCore(host) {
   const api = new TornApi(store);
   const user = new UserFeature({ api, store, notify });
   const chain = new ChainFeature({ api, store, notify, getMeId: () => user.meId() });
-  const targets = new TargetsFeature({ api, store, notify });
+  // Your country (abroad or flying out) for the Abroad list, from your own status.
+  const targets = new TargetsFeature({ api, store, notify, here: () => herePlace(user.state && user.state.data) });
   const cache = new Store(`${dataDir}/cache.json`, { items: null }, { debounceMs: 5000 });
   const history = new PriceHistory(dataDir);
   const market = new MarketFeature({ api, store, cache, notify, history });
@@ -261,7 +262,7 @@ function createCore(host) {
     researchKey = k;
   });
   // Data source: this device, or a Mentat server that collects 24/7 (see sync.js and server/).
-  const sync = new SyncFeature({ store, research, travel, war, history, scout, version: host.version, onSettings: applySynced, defaultServer: host.defaultServer || '' });
+  const sync = new SyncFeature({ store, research, travel, war, history, scout, version: host.version, onSettings: applySynced, defaultServer: host.defaultServer || '', api });
   research.remote = () => sync.covering();
   // Abroad stock: this device stops polling YATA only once the server's copy has actually arrived,
   // so a device that can't get it (a failed download, say) still shows live stock.
@@ -364,10 +365,11 @@ function createCore(host) {
     'chain.refresh': () => chain.refresh(),
     'targets.add': text => { ffscouter.refreshSoon(); return targets.add(String(text || '')); },
     'targets.addCurrent': () => { ffscouter.refreshSoon(); return targets.addFromUrl(host.activeUrl ? host.activeUrl() : ''); },
-    'targets.remove': id => targets.remove(Number(id)),
+    'targets.removeFrom': from => targets.removeFrom(from === 'list' ? 'list' : ''),
+    'targets.remove': (id, which) => targets.remove(Number(id), which === 'abroad' ? 'abroad' : 'home'),
     'targets.refresh': id => targets.refresh(Number(id)),
     'targets.refreshAll': () => targets.refreshAll(),
-    'targets.clear': () => targets.clear(),
+    'targets.clear': which => targets.clear(which === 'abroad' ? 'abroad' : 'home'),
     'ffscouter.saveKey': async (key, acknowledged) => ({ account: await ffscouter.saveKey(key, !!acknowledged) }),
     'ffscouter.removeKey': () => ffscouter.removeKey(''),
     'ffscouter.refresh': () => ffscouter.refreshSoon(true),
@@ -475,7 +477,7 @@ const DEFAULTS = {
   window: { bounds: null, maximized: false },
   browser: { bounds: null, maximized: false },
   chatwin: { bounds: null, bubble: null, onTop: true, minimizeToBubble: true, compact: true, hideInBrowser: true, zoom: 0, emojis: '😂 👍 ❤️ 😭 🙏 🔥 💀 👀 🎉 😅' },
-  ui: { panel: 'overview', zoom: 0, openTornOnStart: false, closeToTray: true, trayHintShown: false, clockZone: 'America/New_York', clockThird: false, clock24: true, avatars: true, browserClocks: true, popupStyle: 'windows', popupSeconds: 12, popupCorner: 'bottom-right', navLayout: 'top', navCollapsed: false, theme: 'mentat', accent: '' },
+  ui: { panel: 'overview', zoom: 0, openTornOnStart: false, closeToTray: true, trayHintShown: false, clockZone: 'America/New_York', clockThird: false, clock24: true, avatars: true, browserClocks: true, popupStyle: 'app', popupSeconds: 12, popupCorner: 'bottom-right', navLayout: 'top', navCollapsed: false, theme: 'mentat', accent: '' },
   session: { urls: [], active: 0 },
   api: { keyEnc: '', account: null, maxPerMinute: 40 },
   user: {
@@ -501,7 +503,7 @@ const DEFAULTS = {
   // Pop-out tabs (popouts.js): open ones, window and bubble places, collapsed / on top.
   popouts: { open: [], bounds: {}, bubble: {}, collapsed: {}, onTop: {}, minimizeToBubble: true },
   // Data source: 'local' (this PC) or 'server' (a Mentat sync server). Secrets are DPAPI-encrypted.
-  sync: { mode: 'local', url: '', tokenEnc: '', cfIdEnc: '', cfSecretEnc: '', serverId: '', joinedId: '', settingsRev: 0, dirty: [] },
+  sync: { mode: 'local', url: '', tokenEnc: '', cfIdEnc: '', cfSecretEnc: '', serverId: '', joinedId: '', settingsRev: 0, dirty: [], deviceId: '' },
 };
 
 const TIME_ZONES = new Set(Intl.supportedValuesOf('timeZone'));
@@ -569,6 +571,7 @@ const TABS = ['overview', 'chain', 'research', 'faction', 'war', 'targets', 'tra
 const TAB_LABELS = {
   overview: 'Overview', chain: 'Chain', targets: 'Targets', faction: 'My Faction', war: 'War', research: 'Oppo Research',
   market: 'Market', travel: 'Travel', planner: 'Planner', casino: 'Casino', alerts: 'Alerts', settings: 'Settings',
+  'targets:list': 'Targets', 'targets:abroad': 'Abroad',
   'research:overview': 'Research', 'research:report': 'War report', 'research:scout': 'Scouting',
   'travel:timed': 'Timed trips', 'travel:plan': 'Leave now', 'travel:items': 'Abroad items', 'travel:sell': 'Sell abroad', 'travel:flights': 'Flights & settings',
   'casino:blackjack': 'Blackjack', 'casino:poker': 'Poker', 'casino:highlow': 'High-Low', 'casino:games': 'Other games', 'casino:bookie': 'Bookie', 'casino:tracker': 'Tracker',
@@ -590,6 +593,10 @@ DEFAULTS.ui.setupDone = false;
 // Top bar buttons (and the clocks); false hides one. Ctrl+D and Ctrl+K work either way.
 DEFAULTS.ui.buttons = { torn: true, pages: true, chat: true, clocks: true, account: true };
 SETTABLE['ui.setupDone'] = bool;
+// Condensed tabs: no profile pictures, faction tags or banners in these tabs (right-click a tab,
+// or Settings → Customization). Synced, like the rest of the tab layout.
+DEFAULTS.ui.condensed = [];
+SETTABLE['ui.condensed'] = v => Array.isArray(v) && v.length <= TABS.length && new Set(v).size === v.length && v.every(x => TABS.includes(x));
 for (const k of Object.keys(DEFAULTS.ui.buttons)) SETTABLE[`ui.buttons.${k}`] = bool;
 DEFAULTS.updates = { auto: true }; // check the Mentat server for new versions (installed copies)
 DEFAULTS.ui.themeDark = 'mentat';
@@ -728,6 +735,13 @@ const API_COMMENT = 'Mentat';
 const MIN_GAP_MS = 1000;
 const TIMEOUT_MS = 15000;
 const KEY_PATTERN = /^[A-Za-z0-9]{16}$/;
+// "Each user can make up to 100 individual requests per minute across all of their keys"
+// (torn.com/api.html). The calls your other Mentat devices and the Mentat server make with your
+// key count too (reported by the server, see setOthers), so all of them together stay under this.
+const TORN_LIMIT = 100;
+const ALL_MENTAT_MAX = 95; // leaves a little room for other tools
+const MIN_BUDGET = 5; // this device never stops completely
+const OTHERS_FRESH_MS = 150e3; // a report older than this no longer counts
 
 // Errors that mean the key itself is unusable: remove it and stop.
 const KEY_ERRORS = {
@@ -768,6 +782,7 @@ class TornApi extends EventEmitter {
     this.timer = null;
     this.pausedUntil = 0;
     this.banner = '';
+    this.others = null; // { n, detail, at }: calls made elsewhere with this player's key, last minute
   }
 
   // ---- Key ----
@@ -835,8 +850,34 @@ class TornApi extends EventEmitter {
       pausedUntil: this.pausedUntil > now ? this.pausedUntil : 0,
       usedLastMinute: this.log.filter(t => now - t < 60000).length,
       maxPerMinute: this.maxPerMinute(),
+      budget: this.budget(),
+      // null until the Mentat server reports; then calls elsewhere and everything together
+      others: this.othersFresh() ? this.others.n : null,
+      othersDetail: this.othersFresh() ? this.others.detail : null,
+      total: this.othersFresh() ? this.others.n + this.log.filter(t => now - t < 60000).length : null,
+      tornLimit: TORN_LIMIT,
       queued: this.queue.length,
     };
+  }
+
+  // Calls made with this player's key elsewhere in the last minute (other Mentat devices, the
+  // Mentat server). This device then uses only what's left under ALL_MENTAT_MAX.
+  setOthers(n, detail = null) {
+    const v = Math.max(0, Math.round(Number(n) || 0));
+    const changed = !this.othersFresh() || this.others.n !== v || JSON.stringify(this.others.detail) !== JSON.stringify(detail);
+    this.others = { n: v, detail, at: Date.now() };
+    if (changed) { this.emit('status'); this.pump(); }
+  }
+
+  othersFresh() {
+    return !!this.others && Date.now() - this.others.at < OTHERS_FRESH_MS;
+  }
+
+  // Requests this device may make per minute right now.
+  budget() {
+    const own = this.maxPerMinute();
+    if (!this.othersFresh()) return own;
+    return Math.max(MIN_BUDGET, Math.min(own, ALL_MENTAT_MAX - this.others.n));
   }
 
   maxPerMinute() {
@@ -866,7 +907,8 @@ class TornApi extends EventEmitter {
     const now = Date.now();
     this.log = this.log.filter(t => now - t < 60000);
     let wait = this.lastAt + MIN_GAP_MS - now;
-    if (this.log.length >= this.maxPerMinute()) wait = Math.max(wait, 60000 - (now - this.log[0]) + 50);
+    const budget = this.budget();
+    if (this.log.length >= budget) wait = Math.max(wait, 60000 - (now - this.log[this.log.length - budget]) + 50);
     if (wait > 0) {
       this.timer = setTimeout(() => { this.timer = null; this.pump(); }, wait);
       return;
@@ -1385,7 +1427,7 @@ module.exports = { addReading, analyzeItem, fitCadence, nextRestocks, analyzeCou
 // settings themselves, and anything that's only a cache.
 const SYNC_UNITS = [
   'ui.theme', 'ui.themeAuto', 'ui.themeDark', 'ui.themeLight', 'ui.accent', 'ui.clockZone', 'ui.clockThird', 'ui.clock24', 'ui.browserClocks',
-  'ui.popupStyle', 'ui.popupSeconds', 'ui.popupCorner', 'ui.navLayout', 'ui.navCollapsed', 'ui.tabLayout', 'ui.nav',
+  'ui.popupStyle', 'ui.popupSeconds', 'ui.popupCorner', 'ui.navLayout', 'ui.navCollapsed', 'ui.tabLayout', 'ui.nav', 'ui.condensed',
   'ui.setupDone', 'ui.buttons',
   'user.interval', 'user.notify',
   'chain.enabled', 'chain.alerts', 'chain.desktop', 'chain.sound', 'chain.volume', 'chain.minChain',
@@ -1626,9 +1668,14 @@ function cleanUrl(u) {
 }
 
 class SyncFeature extends EventEmitter {
-  constructor({ store, research, travel, war, history, scout = null, onSettings, version, defaultServer = '' }) {
+  constructor({ store, research, travel, war, history, scout = null, onSettings, version, defaultServer = '', api = null }) {
     super();
     this.store = store;
+    // Torn counts every call made with your key, from any device or the server, against one
+    // limit. Each status check tells the server how many calls this device made in the last
+    // minute; the server answers with the calls made elsewhere (api.setOthers).
+    this.api = api;
+    if (!this.store.get('sync.deviceId')) this.store.set('sync.deviceId', `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`);
     this.defaultServer = defaultServer; // the server this build signs in to unless another is entered
     this.signedOut = this.store.get('sync.signedOut') || ''; // why a member session ended
     this.me = this.store.get('sync.me') || null;
@@ -1808,6 +1855,10 @@ class SyncFeature extends EventEmitter {
     const headers = { Authorization: `Bearer ${this.secret('token')}`, Accept: 'application/json', 'Accept-Encoding': 'gzip', 'User-Agent': 'Mentat' };
     const cfId = this.secret('cfId'), cfSecret = this.secret('cfSecret');
     if (cfId && cfSecret) { headers['CF-Access-Client-Id'] = cfId; headers['CF-Access-Client-Secret'] = cfSecret; }
+    if (p === 'status') {
+      headers['X-Mentat-Device'] = this.store.get('sync.deviceId') || '';
+      if (this.api) headers['X-Mentat-Used'] = String(this.api.status().usedLastMinute);
+    }
     let payload;
     if (body !== null) {
       headers['Content-Type'] = 'application/json';
@@ -1864,6 +1915,8 @@ class SyncFeature extends EventEmitter {
       }
       const wasCovering = this.covering(now);
       this.server = st;
+      // Calls made with this player's key elsewhere (older servers don't report them).
+      if (this.api && st.usage) this.api.setOthers((st.usage.server || 0) + (st.usage.push || 0) + (st.usage.devices || 0), st.usage);
       this.lastOkAt = Date.now();
       this.error = '';
       await this.syncSettings(st);
@@ -4731,15 +4784,46 @@ function idFromUrl(url) {
   return m ? Number(m[1]) : 0;
 }
 
+// ---- Where a player is (the Abroad list) ----
+// From Torn's status text: "In Japan" while abroad, "Traveling to Japan", "Returning to Torn from Japan".
+const norm = s => String(s || '').trim().replace(/\.$/, '').toLowerCase();
+const sameCountry = (a, b) => !!a && !!b && norm(a) === norm(b);
+function countryIn(st) {
+  if (!st || st.state !== 'Abroad') return '';
+  const m = /^In (.+?)\.?$/i.exec(String(st.description || '').trim());
+  return m ? m[1] : '';
+}
+function returningFrom(st) {
+  if (!st || st.state !== 'Traveling') return '';
+  const m = /^Returning to Torn from (.+?)\.?$/i.exec(String(st.description || '').trim());
+  return m ? m[1] : '';
+}
+// Your country for the Abroad list: where you are abroad, or where you're flying to. '' in Torn
+// (or on the way home). `u` is the user feature's data.
+function herePlace(u) {
+  if (!u) return '';
+  const st = u.status || {};
+  const tr = u.travel;
+  const dest = tr && tr.destination && tr.destination !== 'Torn' ? tr.destination : '';
+  if (st.state === 'Abroad') return dest || countryIn(st);
+  if (st.state === 'Traveling') return dest;
+  return '';
+}
+// Each entry is on the Targets list (home, the default) and/or the Abroad list (abroad: true).
+const onList = (t, which) => (which === 'abroad' ? !!t.abroad : t.home !== false);
+
 class TargetsFeature extends EventEmitter {
-  constructor({ api, store, notify }) {
+  constructor({ api, store, notify, here = () => '' }) {
     super();
     this.api = api;
     this.store = store;
     this.notify = notify;
+    this.here = here; // your country for the Abroad list ('' in Torn)
     this.inFlight = false;
     this.queueNote = '';
     this.edges = {};
+    this.lastHere = null;
+    this.left = { country: '', count: 0, names: [] }; // who left your country (removed from Abroad)
   }
 
   list() {
@@ -4759,21 +4843,69 @@ class TargetsFeature extends EventEmitter {
   }
 
   snapshot() {
-    return { targets: Object.values(this.list()), queue: this.queueNote };
+    return { targets: Object.values(this.list()), queue: this.queueNote, here: this.here(), left: this.left };
   }
 
   add(text) {
     const ids = parseIds(text);
     const list = this.list();
-    let added = 0;
+    // Entries are keyed by player ID, so nobody is ever listed twice: someone already on the list
+    // is only checked again (and counted as `already`).
+    let added = 0, already = 0;
     for (const id of ids) {
-      if (list[id]) { list[id].force = true; continue; }
+      if (list[id]) {
+        list[id].force = true;
+        if (list[id].home === false) { list[id].home = true; added++; } else already++; // was only on the Abroad list
+        continue;
+      }
       if (Object.keys(list).length >= MAX_TARGETS) break;
       list[id] = { id, name: '', level: 0, status: null, life: null, lastFetched: 0, force: true, invalid: false, error: '', addedAt: Date.now() };
       added++;
     }
     this.save(list);
-    return { added, found: ids.length };
+    return { added, already, found: ids.length };
+  }
+
+  // Players from a list on a Torn page (right-click "Add all players in this list", main.js), with
+  // the name and level the list showed so they read right before their first refresh. `from` marks
+  // them ('list') so they can be removed together; players already on the list keep their own
+  // entry and aren't marked. which = 'home' (Targets) or 'abroad' (the Abroad list).
+  addPlayers(players, from = '', which = 'home') {
+    const list = this.list();
+    let added = 0, full = false;
+    for (const p of players) {
+      const id = Number(p && p.id);
+      if (!Number.isInteger(id) || id <= 0) continue;
+      const t = list[id];
+      if (t) {
+        t.force = true;
+        if (!onList(t, which)) { if (which === 'abroad') t.abroad = true; else t.home = true; added++; }
+        continue;
+      }
+      if (Object.keys(list).length >= MAX_TARGETS) { full = true; break; }
+      const base = { id, name: String(p.name || '').slice(0, 40), level: Math.max(0, Math.min(100, Number(p.level) || 0)), status: null, life: null, lastFetched: 0, force: true, invalid: false, error: '', addedAt: Date.now() };
+      list[id] = which === 'abroad' ? { ...base, home: false, abroad: true } : { ...base, from };
+      added++;
+    }
+    this.save(list);
+    return { added, found: players.length, full };
+  }
+
+  // Take an entry off one list; it's deleted once it's on neither.
+  drop(list, id, which) {
+    const t = list[id];
+    if (!t) return false;
+    if (which === 'abroad') t.abroad = false; else t.home = false;
+    if (!t.abroad && t.home === false) { delete list[id]; delete this.edges[id]; }
+    return true;
+  }
+
+  removeFrom(from) {
+    const list = this.list();
+    let removed = 0;
+    for (const [id, t] of Object.entries(list)) if (from && t.from === from && onList(t, 'home') && this.drop(list, id, 'home')) removed++;
+    this.save(list);
+    return { removed };
   }
 
   addFromUrl(url) {
@@ -4782,16 +4914,16 @@ class TargetsFeature extends EventEmitter {
     return this.add(String(id));
   }
 
-  remove(id) {
+  remove(id, which = 'home') {
     const list = this.list();
-    delete list[id];
-    delete this.edges[id];
+    this.drop(list, id, which === 'abroad' ? 'abroad' : 'home');
     this.save(list);
   }
 
-  clear() {
-    this.edges = {};
-    this.save({});
+  clear(which = 'home') {
+    const list = this.list();
+    for (const [id, t] of Object.entries(list)) if (onList(t, which)) this.drop(list, id, which);
+    this.save(list);
   }
 
   refresh(id) {
@@ -4812,6 +4944,18 @@ class TargetsFeature extends EventEmitter {
 
   tick(now) {
     const s = this.store.get('targets') || {};
+    // You arrived somewhere (or set off): check everyone on the Abroad list again.
+    const here = this.here();
+    if (here !== this.lastHere) {
+      if (this.lastHere !== null && here) {
+        const all = this.list();
+        for (const t of Object.values(all)) if (t.abroad) t.force = true;
+        this.save(all);
+      }
+      if (!sameCountry(here, this.left.country)) this.left = { country: here, count: 0, names: [] };
+      this.lastHere = here;
+      this.emit('state');
+    }
     const list = this.list();
 
     // Hospital/jail timers that ran out locally: notify once, and re-check if auto refresh is on.
@@ -4847,6 +4991,7 @@ class TargetsFeature extends EventEmitter {
     try {
       const d = await this.api.request(`/user/${id}?selections=profile`, { soft: [6, 7], priority: 6 });
       this.emit('profile', id, d); // its picture, for the avatars
+      let leaving = false;
       this.update(id, t => {
         t.name = d.name;
         t.level = d.level;
@@ -4858,7 +5003,26 @@ class TargetsFeature extends EventEmitter {
         t.force = false;
         t.invalid = false;
         t.error = '';
+        // Where they are: the country they were last seen in (a hospital stay abroad keeps it).
+        const was = t.lastIn || '';
+        const nowIn = countryIn(t.status);
+        if (nowIn) t.lastIn = nowIn;
+        else if (t.status.state !== 'Hospital') t.lastIn = '';
+        // Left the country you're in: off the Abroad list (the user's rule, 2026-11-21).
+        const here = this.here();
+        if (t.abroad && here && t.status.state !== 'Hospital' && !sameCountry(nowIn, here)
+          && (sameCountry(was, here) || sameCountry(returningFrom(t.status), here))) leaving = true;
       });
+      if (leaving) {
+        const list = this.list();
+        const t = list[id];
+        if (t && this.drop(list, id, 'abroad')) {
+          const here = this.here();
+          if (!sameCountry(this.left.country, here)) this.left = { country: here, count: 0, names: [] };
+          this.left = { country: here, count: this.left.count + 1, names: [t.name || `#${id}`, ...this.left.names].slice(0, 5) };
+          this.save(list);
+        }
+      }
     } catch (e) {
       if (e.kind === 'soft') this.update(id, t => { t.invalid = true; t.force = false; t.error = e.message; t.lastFetched = Date.now(); });
       else if (e.kind === 'paused' || e.kind === 'network' || e.kind === 'backoff') { /* the API banner explains it; retry later */ }
@@ -4868,7 +5032,7 @@ class TargetsFeature extends EventEmitter {
   }
 }
 
-module.exports = { TargetsFeature, parseIds, idFromUrl };
+module.exports = { TargetsFeature, parseIds, idFromUrl, herePlace, countryIn };
 
   },
   "features/travel.js": function (module, exports, require) {

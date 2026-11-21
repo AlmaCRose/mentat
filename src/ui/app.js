@@ -1,5 +1,5 @@
 'use strict';
-/* global app, S, $, $$, panel, esc, fmtDur, fmtAgo, num, countdown, ago, profileUrl, attackUrl, link, statusPill, cmd, renderTravel, renderMarket, initTravel, initMarket, loadCatalog, renderAlerts, initAlerts, initItemModal, renderItemModal, renderWar, initWar, renderResearch, initResearch, renderFaction, initFaction, navModel, navLabel, navIcon, navResolve, navParent, renderNavEditor, NAV_PANELS */
+/* global app, S, $, $$, panel, esc, PICTURE_TABS, fmtDur, fmtAgo, num, countdown, ago, profileUrl, attackUrl, link, statusPill, cmd, renderTravel, renderMarket, initTravel, initMarket, loadCatalog, renderAlerts, initAlerts, initItemModal, renderItemModal, renderWar, initWar, renderResearch, initResearch, renderFaction, initFaction, navModel, navLabel, navIcon, navResolve, navParent, renderNavEditor, NAV_PANELS */
 /* exported showPanel */
 // navActive is nav.js's (the main-bar entry on show).
 /* global navActive:writable */
@@ -153,8 +153,9 @@ document.addEventListener('click', e => {
   }
   const b = e.target.closest('[data-cmd]');
   if (b && !b.disabled) {
-    const arg = b.dataset.arg;
-    cmd(b.dataset.cmd, ...(arg !== undefined ? [isNaN(arg) ? arg : Number(arg)] : []));
+    // data-arg, and data-arg2 for a second argument
+    const args = b.dataset.arg === undefined ? [] : [b.dataset.arg, b.dataset.arg2].filter(v => v !== undefined).map(v => (isNaN(v) ? v : Number(v)));
+    cmd(b.dataset.cmd, ...args);
     return;
   }
   const p = e.target.closest('#panel-nav [data-panel]');
@@ -181,6 +182,7 @@ function showPanel(entry) {
   const name = navParent(id);
   renderNav();
   $$('#panels > section').forEach(s => s.classList.toggle('active', s.dataset.panel === name));
+  if (name === 'targets') renderTargetsShell();
   if (name === 'travel') renderTravel();
   if (name === 'market') renderMarket();
   if (name === 'alerts') renderAlerts();
@@ -200,8 +202,20 @@ function renderApi() {
   banner.hidden = !msg;
   banner.textContent = msg;
   const paused = a.pausedUntil ? ` · paused ${countdown(a.pausedUntil, 'resuming')}` : '';
+  // With a Mentat server: everything Mentat did with your key in the last minute (this device,
+  // the server, phone alerts, your other devices) against Torn's 100 per player.
+  let all = '';
+  if (a.total != null) {
+    const d = a.othersDetail || {};
+    const parts = [`this device ${a.usedLastMinute}`, `the server ${d.server || 0}`];
+    if (d.push) parts.push(`phone alerts ${d.push}`);
+    parts.push(`other devices ${d.devices || 0}${d.deviceCount ? ` (${d.deviceCount})` : ''}`);
+    const tip = `Calls made with your key in the last minute: ${parts.join(', ')}. Torn allows ${a.tornLimit} per minute across all your keys; Mentat keeps everything together under 95. Other tools (Torn PDA, TornTools, the Mentat PDA bubbles) aren't counted.`;
+    const near = a.total >= 80;
+    all = ` · <span title="${esc(tip)}"${near ? ' style="color:var(--text);font-weight:700"' : ''}>all Mentat ${a.total}/${a.tornLimit}${near ? ' (near limit)' : ''}</span>`;
+  }
   $('#api-footer').innerHTML = a.hasKey
-    ? `<span>${a.account ? `${esc(a.account.name)} [${a.account.id}]` : 'Key set'}</span><span class="mono">API ${a.usedLastMinute}/${a.maxPerMinute} per min${paused}</span>`
+    ? `<span>${a.account ? `${esc(a.account.name)} [${a.account.id}]` : 'Key set'}</span><span class="mono">API ${a.usedLastMinute}/${a.budget || a.maxPerMinute} per min${all}${paused}</span>`
     : '<span>No API key</span><span>api.torn.com only</span>';
   renderSettingsAccount();
 }
@@ -338,9 +352,42 @@ function renderChain() {
 }
 
 // ---- Targets ----
+// Two sub-tabs: Targets (your list) and Abroad (players abroad: ready when they're in the country
+// you're in; anyone who leaves that country is removed from it, the user's rule, 2026-11-21).
 function renderTargetsShell() {
   const el = panel('targets');
+  if (!el) return;
+  const view = navView('targets');
+  el.dataset.view = view;
+  if (view === 'abroad') {
+    el.innerHTML = `
+      ${navSubnav('targets', 'tgsub')}
+      <div id="abroad-where" class="card" style="padding:8px 10px"></div>
+      <div class="note">Add players: on Torn's page of the people in a country, right-click a name → <b>Add all players in this list to Abroad targets</b> (while you're abroad or flying out). Players in the country you're in show as ready; anyone who leaves it is removed from this list.</div>
+      <div class="row between" style="margin-top:6px">
+        <label>Then by <select id="target-sort">
+          <option value="status">Name</option>
+          <option value="ffLow">Fair fight, easiest first</option>
+          <option value="ffHigh">Fair fight, best respect first</option>
+          <option value="bsLow">Estimated stats, lowest first</option>
+          <option value="bsHigh">Estimated stats, highest first</option>
+          <option value="level">Level</option>
+        </select></label>
+        <span class="row"><button data-cmd="targets.refreshAll">Refresh all</button><button id="abroad-clear" class="danger">Clear list</button></span>
+      </div>
+      <div id="target-msg" class="note"></div>
+      <div id="abroad-list" style="margin-top:6px"></div>`;
+    $('#target-sort').value = prefs.get('targets.sort', 'status');
+    $('#target-sort').addEventListener('change', e => { prefs.set('targets.sort', e.target.value); renderTargets(); });
+    $('#abroad-clear').addEventListener('click', async () => {
+      if (!confirm('Remove everyone from the Abroad list? Players also on your Targets list stay there.')) return;
+      await cmd('targets.clear', 'abroad');
+    });
+    renderTargets();
+    return;
+  }
   el.innerHTML = `
+    ${navSubnav('targets', 'tgsub')}
     <form id="target-add" class="keyrow">
       <input id="target-input" placeholder="Player IDs or profile links" spellcheck="false">
       <button class="primary">Add</button>
@@ -366,6 +413,7 @@ function renderTargetsShell() {
       </select></label>
       <span id="ffs-status" class="muted small"></span>
     </div>
+    <div id="list-remove" class="row" style="margin-top:6px"></div>
     <div id="target-msg" class="note"></div>
     <div id="target-list" style="margin-top:6px"></div>
     <h3>Find targets <span class="small" style="text-transform:none;font-weight:400">from FFScouter</span></h3>
@@ -376,16 +424,86 @@ function renderTargetsShell() {
     e.preventDefault();
     const input = $('#target-input');
     const r = await cmd('targets.add', input.value);
-    $('#target-msg').textContent = r.found ? `Added ${r.added} new target${r.added === 1 ? '' : 's'}.` : 'No player IDs found.';
+    // The list is keyed by player ID: anyone already on it is never added twice.
+    $('#target-msg').textContent = !r.found ? 'No player IDs found.'
+      : `Added ${r.added} new target${r.added === 1 ? '' : 's'}${r.already ? `; ${r.already} already on your list` : ''}.`;
     if (r.found) input.value = '';
   });
+  // Targets added with "Add all players in this list" (right-click in a Torn tab) can go together.
+  $('#list-remove').addEventListener('click', async e => {
+    if (e.target.id !== 'list-remove-btn') return;
+    const r = await cmd('targets.removeFrom', 'list');
+    $('#target-msg').textContent = `Removed ${r.removed} target${r.removed === 1 ? '' : 's'} added from lists.`;
+  });
+  renderTargets();
 }
+document.addEventListener('click', e => {
+  const s = e.target.closest('[data-tgsub]');
+  if (s) { prefs.set('targets.sub', s.dataset.tgsub); renderTargetsShell(); }
+});
 
 function targetRank(t, now) {
   if (t.invalid || !t.status) return [3, 0];
   if (t.status.state === 'Okay') return [0, 0];
   if ((t.status.state === 'Hospital' || t.status.state === 'Jail') && t.status.until) return [1, Math.max(0, t.status.until - now)];
   return [2, 0];
+}
+
+// ---- Abroad list: where players are, from Torn's status text ----
+const sameCountry = (a, b) => !!a && !!b && String(a).trim().replace(/\.$/, '').toLowerCase() === String(b).trim().replace(/\.$/, '').toLowerCase();
+const abroadIn = st => { const m = st && st.state === 'Abroad' ? /^In (.+?)\.?$/i.exec(String(st.description || '').trim()) : null; return m ? m[1] : ''; };
+const flyingTo = st => { const m = st && st.state === 'Traveling' ? /^Traveling to (.+?)\.?$/i.exec(String(st.description || '').trim()) : null; return m ? m[1] : ''; };
+// Ready = in the country you're in; then on their way there; then hospital (soonest out first).
+function abroadRank(t, here, now) {
+  if (t.invalid || !t.status) return [4, 0];
+  if (here && sameCountry(abroadIn(t.status), here)) return [0, 0];
+  if (here && sameCountry(flyingTo(t.status), here)) return [1, 0];
+  if ((t.status.state === 'Hospital' || t.status.state === 'Jail') && t.status.until) return [2, Math.max(0, t.status.until - now)];
+  return [3, 0];
+}
+
+// One row of either list. which = 'home' or 'abroad' (for its remove button); pill = status pill HTML.
+function targetRow(t, est, which, pill) {
+  const meta = t.invalid ? esc(t.error || 'Invalid player')
+    : [t.level ? `Lv ${t.level}` : '', t.life ? `Life ${num(t.life.current)}/${num(t.life.maximum)}` : '', t.faction ? esc(t.faction) : '', t.lastAction ? esc(t.lastAction.relative) : '', t.lastFetched ? `checked ${fmtAgo(t.lastFetched)}` : 'loading…'].filter(Boolean).join(' · ');
+  return `<div class="target ${t.invalid ? 'invalid' : ''}">
+      <div class="tname">${avatar(t.id, 'av-md')}${link(profileUrl(t.id), esc(t.name || `#${t.id}`))} <span class="muted small">[${t.id}]</span> ${ffPill(est[t.id])}</div>
+      <div>${pill}</div>
+      <div class="meta" title="${esc(t.status ? t.status.description : '')}">${meta}</div>
+      <div class="actions">
+        <button data-open="${attackUrl(t.id)}" title="Open the attack page in a new Torn tab">Attack</button>
+        <button data-cmd="targets.refresh" data-arg="${t.id}" title="Refresh">&#8635;</button>
+        <button class="danger" data-cmd="targets.remove" data-arg="${t.id}" data-arg2="${which}" title="Remove from this list">&times;</button>
+      </div>
+    </div>`;
+}
+
+function renderAbroadTargets(f, est, sorters) {
+  const list = $('#abroad-list');
+  if (!list) return;
+  const now = Date.now();
+  const here = f.here || '';
+  const u = (S.features.user && S.features.user.data) || {};
+  const flying = u.status && u.status.state === 'Traveling';
+  const sort = prefs.get('targets.sort', 'status');
+  const ts = f.targets.filter(t => t.abroad).sort((a, b) => {
+    const ra = abroadRank(a, here, now), rb = abroadRank(b, here, now);
+    return ra[0] - rb[0] || ra[1] - rb[1] || (sort !== 'status' && sorters[sort] ? sorters[sort](a, b) : 0) || (a.name || '').localeCompare(b.name || '');
+  });
+  const ready = ts.filter(t => abroadRank(t, here, now)[0] === 0).length;
+  const left = f.left && f.left.count && sameCountry(f.left.country, here) ? f.left : null;
+  $('#abroad-where').innerHTML = here
+    ? `${flying ? 'Flying to' : "You're in"} <b>${esc(here)}</b> · <b>${ready}</b> ready of ${ts.length}${left ? ` · ${left.count} left ${esc(here)} and ${left.count === 1 ? 'was' : 'were'} removed (latest: ${esc(left.names.join(', '))})` : ''}`
+    : "You're in Torn. This list comes into play when you fly out: players in the country you go to show as ready.";
+  $('#target-msg').textContent = f.queue || '';
+  if (!ts.length) { list.innerHTML = '<div class="empty">Nobody on the Abroad list yet.</div>'; return; }
+  list.innerHTML = ts.map(t => {
+    const r = abroadRank(t, here, now)[0];
+    const pill = r === 0 ? `<span class="pill ok" title="${esc(t.status.description)}">Ready · in ${esc(here)}</span>`
+      : r === 1 ? `<span class="pill info" title="${esc(t.status.description)}">On the way to ${esc(here)}</span>`
+        : t.status ? statusPill(t.status, t.status.until) : '';
+    return targetRow(t, est, 'abroad', pill);
+  }).join('');
 }
 
 // Fair fight (FFScouter): 1 = much weaker than you, 3 = as strong or stronger (max respect).
@@ -398,8 +516,24 @@ function ffPill(e) {
 
 function renderTargets() {
   const f = S.features.targets;
+  const el = panel('targets');
+  if (!f || !el) return;
+  if (el.dataset.view === 'abroad') {
+    const est0 = (S.features.ffscouter || {}).stats || {};
+    const v0 = (t, k) => (est0[t.id] && est0[t.id][k] !== null && est0[t.id][k] !== undefined ? est0[t.id][k] : null);
+    const by0 = (k, dir) => (a, b) => { const x = v0(a, k), y = v0(b, k); return x === null && y === null ? 0 : x === null ? 1 : y === null ? -1 : dir * (x - y); };
+    renderAbroadTargets(f, est0, { ffLow: by0('ff', 1), ffHigh: by0('ff', -1), bsLow: by0('bs', 1), bsHigh: by0('bs', -1), level: (a, b) => (b.level || 0) - (a.level || 0) });
+    return;
+  }
   const list = $('#target-list');
-  if (!list || !f) return;
+  if (!list) return;
+  const home = f.targets.filter(t => t.home !== false);
+  const fromLists = home.filter(t => t.from === 'list').length;
+  const lr = $('#list-remove');
+  if (lr && lr.dataset.n !== String(fromLists)) {
+    lr.dataset.n = String(fromLists);
+    lr.innerHTML = fromLists ? `<button id="list-remove-btn" title="Removes only the targets added with Add all players in this list">Remove the ${fromLists} added from lists</button>` : '';
+  }
   const ffs = S.features.ffscouter || {};
   const est = ffs.stats || {};
   const now = Date.now();
@@ -417,7 +551,7 @@ function renderTargets() {
     return ra[0] - rb[0] || ra[1] - rb[1] || (a.name || '').localeCompare(b.name || '');
   };
   const sorters = { status: byStatus, ffLow: byNum('ff', 1), ffHigh: byNum('ff', -1), bsLow: byNum('bs', 1), bsHigh: byNum('bs', -1), level: (a, b) => (b.level || 0) - (a.level || 0) };
-  const ts = [...f.targets].sort((a, b) => (sorters[sort] || byStatus)(a, b) || byStatus(a, b));
+  const ts = home.sort((a, b) => (sorters[sort] || byStatus)(a, b) || byStatus(a, b));
   $('#target-msg').textContent = f.queue || $('#target-msg').textContent;
 
   const known = ts.filter(t => val(t, 'ff') !== null).length;
@@ -427,20 +561,8 @@ function renderTargets() {
     : `<a data-goto="settings">Add your FFScouter key</a> for fair fight and stat estimates`;
 
   if (!ts.length) { list.innerHTML = '<div class="empty">No targets yet. Add player IDs above, use the FFScouter finder below, or right-click a player link in Torn.</div>'; renderFinder(); return; }
-  list.innerHTML = `<div class="muted small" style="margin-bottom:4px">${ts.length} target${ts.length === 1 ? '' : 's'} · ${ts.filter(t => t.status && t.status.state === 'Okay').length} okay</div>` + ts.map(t => {
-    const meta = t.invalid ? esc(t.error || 'Invalid player')
-      : [t.level ? `Lv ${t.level}` : '', t.life ? `Life ${num(t.life.current)}/${num(t.life.maximum)}` : '', t.faction ? esc(t.faction) : '', t.lastAction ? esc(t.lastAction.relative) : '', t.lastFetched ? `checked ${fmtAgo(t.lastFetched)}` : 'loading…'].filter(Boolean).join(' · ');
-    return `<div class="target ${t.invalid ? 'invalid' : ''}">
-      <div class="tname">${avatar(t.id, 'av-md')}${link(profileUrl(t.id), esc(t.name || `#${t.id}`))} <span class="muted small">[${t.id}]</span> ${ffPill(est[t.id])}</div>
-      <div>${t.status ? statusPill(t.status, t.status.until) : ''}</div>
-      <div class="meta" title="${esc(t.status ? t.status.description : '')}">${meta}</div>
-      <div class="actions">
-        <button data-open="${attackUrl(t.id)}" title="Open the attack page in a new Torn tab">Attack</button>
-        <button data-cmd="targets.refresh" data-arg="${t.id}" title="Refresh">&#8635;</button>
-        <button class="danger" data-cmd="targets.remove" data-arg="${t.id}" title="Remove">&times;</button>
-      </div>
-    </div>`;
-  }).join('');
+  list.innerHTML = `<div class="muted small" style="margin-bottom:4px">${ts.length} target${ts.length === 1 ? '' : 's'} · ${ts.filter(t => t.status && t.status.state === 'Okay').length} okay</div>`
+    + ts.map(t => targetRow(t, est, 'home', t.status ? statusPill(t.status, t.status.until) : '')).join('');
   renderFinder();
 }
 
@@ -706,6 +828,8 @@ function renderSettingsShell() {
       <select id="clock-zone" data-set="ui.clockZone">${zoneOptions()}</select></div>
     <div class="setting"><label>24-hour clocks</label><input type="checkbox" data-set="ui.clock24"></div>
     <div class="setting"><label>Profile pictures and faction images<div class="note" style="margin:0">Shown next to players in Targets, faction lists, war boards and Oppo Research. Pictures you haven't seen yet are looked up a few a minute at the lowest priority, so they barely touch your API limit. Some pictures are large (animated): turn this off on a slow or metered connection.</div></label><input type="checkbox" data-set="ui.avatars"></div>
+    <div class="setting"><label>Condensed tabs<div class="note" style="margin:0">No pictures in these tabs, and tighter rows. You can also right-click a tab.</div></label>
+      <span class="row wrap" style="gap:4px 12px">${PICTURE_TABS.map(t => `<label class="row"><input type="checkbox" data-condense="${t}"> ${esc(navLabel(t))}</label>`).join('')}</span></div>
     <div class="setting"><label>Clocks in the Torn browser too<div class="note" style="margin:0">Shows the same clocks in the browser window's toolbar.</div></label><input type="checkbox" data-set="ui.browserClocks"></div>
     </section>
 
@@ -1033,6 +1157,10 @@ function syncSettingInputs() {
   applyButtons();
   document.body.classList.toggle('popups-app', !!(S.settings.ui && S.settings.ui.popupStyle === 'app'));
   document.documentElement.classList.toggle('no-av', !!(S.settings.ui && S.settings.ui.avatars === false));
+  // Condensed tabs (ui.condensed): that tab's pictures are hidden and its rows are tighter.
+  const condensed = new Set((S.settings.ui && S.settings.ui.condensed) || []);
+  for (const sec of $$('#panels > section[data-panel]')) sec.classList.toggle('condensed', condensed.has(sec.dataset.panel));
+  for (const cb of $$('[data-condense]')) cb.checked = condensed.has(cb.dataset.condense);
   for (const input of $$('[data-set]')) {
     if (input === document.activeElement && input.type !== 'checkbox' && input.type !== 'color') continue;
     const v = input.dataset.set.split('.').reduce((o, k) => (o == null ? undefined : o[k]), S.settings);
@@ -1192,7 +1320,7 @@ document.addEventListener('focusout', () => setTimeout(() => {
 
 let lastCatalogAt = 0;
 const RENDER = {
-  user: () => { renderOverview(); renderSafe('planner', renderPlanner); },
+  user: () => { renderOverview(); renderSafe('planner', renderPlanner); renderTargets(); }, // Abroad: where you are
   chain: () => { renderChain(); renderSafe('war', renderWar); },
   targets: renderTargets,
   travel: () => { renderSafe('travel', renderTravel); renderSafe('planner', renderPlanner); },

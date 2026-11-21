@@ -11,6 +11,7 @@
 const NAV_PANELS = [['overview', 'Overview'], ['chain', 'Chain'], ['targets', 'Targets'], ['faction', 'My Faction'], ['war', 'War'], ['research', 'Oppo Research'], ['market', 'Market'], ['travel', 'Travel'], ['planner', 'Planner'], ['casino', 'Casino'], ['alerts', 'Alerts'], ['settings', 'Settings']];
 // Sub-tabs. `pref` remembers the one last open when they sit under their tab.
 const NAV_SUBS = {
+  targets: { pref: 'targets.sub', views: [['list', 'Targets'], ['abroad', 'Abroad']] },
   research: { pref: 'research.view', views: [['overview', 'Research'], ['report', 'War report'], ['scout', 'Scouting']] },
   travel: { pref: 'travel.sub', views: [['timed', 'Timed trips'], ['plan', 'Leave now'], ['items', 'Abroad items'], ['sell', 'Sell abroad'], ['flights', 'Flights & settings']] },
   casino: { pref: 'casino.sub', views: [['blackjack', 'Blackjack'], ['poker', 'Poker'], ['highlow', 'High-Low'], ['games', 'Other games'], ['bookie', 'Bookie'], ['tracker', 'Tracker']] },
@@ -186,6 +187,22 @@ function navSetHidden(id, hide) {
 }
 function navReset() { cmd('settings.set', 'ui.nav', { order: [], sub: {}, hidden: [] }); }
 
+// Condensed tabs (ui.condensed): no profile pictures, faction tags or banners in that tab, with
+// tighter rows. Only the tabs that show pictures offer it; a sub-tab condenses its whole tab.
+const PICTURE_TABS = ['overview', 'chain', 'targets', 'research', 'faction', 'war'];
+const condensedTabs = () => (S.settings && S.settings.ui && Array.isArray(S.settings.ui.condensed) ? S.settings.ui.condensed : []);
+function setCondensed(tab, on) {
+  if (!PICTURE_TABS.includes(tab)) return;
+  const next = condensedTabs().filter(x => x !== tab);
+  if (on) next.push(tab);
+  cmd('settings.set', 'ui.condensed', next);
+}
+// The checkboxes in Settings → Customization
+document.addEventListener('change', e => {
+  const t = e.target && e.target.dataset && e.target.dataset.condense;
+  if (t) setCondensed(t, e.target.checked);
+});
+
 // ---- Drag and drop: on the main bar and on sub-tab bars ----
 let navDrag = '';
 const navVertical = el => document.body.classList.contains('nav-side') && !!el.closest('#panel-nav');
@@ -262,6 +279,8 @@ document.addEventListener('contextmenu', e => {
   if (navSubOf(id)) items.push(lifted ? ['demote', `Put back under ${navLabel(p)}`] : ['promote', 'Show on the main bar']);
   if (id !== 'settings') items.push(['hide', 'Hide this tab', lifted && m.main.length <= 2]);
   if (!document.documentElement.classList.contains('web')) items.push(['pop', 'Pop out into its own window']);
+  const tab = id.split(':')[0];
+  if (PICTURE_TABS.includes(tab)) items.push(['condense', condensedTabs().includes(tab) ? 'Show pictures in this tab' : 'Condensed view (no pictures)']);
   items.push(['-'], ['edit', 'Customize tabs…']);
   const menu = document.createElement('div');
   menu.id = 'nav-menu';
@@ -284,6 +303,7 @@ document.addEventListener('click', e => {
   const k = b.dataset.navMenu;
   if (k === 'back' || k === 'fwd') navStep(id, k === 'back' ? -1 : 1);
   else if (k === 'pop') cmd('pop.open', id);
+  else if (k === 'condense') { const tab = id.split(':')[0]; setCondensed(tab, !condensedTabs().includes(tab)); }
   else if (k === 'promote') {
     const p = navParent(id);
     navPlace(id, 'main', p, true); // right after its tab

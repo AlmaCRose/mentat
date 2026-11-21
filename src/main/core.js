@@ -29,7 +29,7 @@ const { PriceHistory } = require('./history');
 const { SyncFeature } = require('./sync');
 const { UserFeature } = require('./features/user');
 const { ChainFeature } = require('./features/chain');
-const { TargetsFeature } = require('./features/targets');
+const { TargetsFeature, herePlace } = require('./features/targets');
 const { MarketFeature } = require('./features/market');
 const { TravelFeature } = require('./features/travel');
 const { BazaarFeature } = require('./features/bazaar');
@@ -52,7 +52,8 @@ function createCore(host) {
   const api = new TornApi(store);
   const user = new UserFeature({ api, store, notify });
   const chain = new ChainFeature({ api, store, notify, getMeId: () => user.meId() });
-  const targets = new TargetsFeature({ api, store, notify });
+  // Your country (abroad or flying out) for the Abroad list, from your own status.
+  const targets = new TargetsFeature({ api, store, notify, here: () => herePlace(user.state && user.state.data) });
   const cache = new Store(`${dataDir}/cache.json`, { items: null }, { debounceMs: 5000 });
   const history = new PriceHistory(dataDir);
   const market = new MarketFeature({ api, store, cache, notify, history });
@@ -85,7 +86,7 @@ function createCore(host) {
     researchKey = k;
   });
   // Data source: this device, or a Mentat server that collects 24/7 (see sync.js and server/).
-  const sync = new SyncFeature({ store, research, travel, war, history, scout, version: host.version, onSettings: applySynced, defaultServer: host.defaultServer || '' });
+  const sync = new SyncFeature({ store, research, travel, war, history, scout, version: host.version, onSettings: applySynced, defaultServer: host.defaultServer || '', api });
   research.remote = () => sync.covering();
   // Abroad stock: this device stops polling YATA only once the server's copy has actually arrived,
   // so a device that can't get it (a failed download, say) still shows live stock.
@@ -188,10 +189,11 @@ function createCore(host) {
     'chain.refresh': () => chain.refresh(),
     'targets.add': text => { ffscouter.refreshSoon(); return targets.add(String(text || '')); },
     'targets.addCurrent': () => { ffscouter.refreshSoon(); return targets.addFromUrl(host.activeUrl ? host.activeUrl() : ''); },
-    'targets.remove': id => targets.remove(Number(id)),
+    'targets.removeFrom': from => targets.removeFrom(from === 'list' ? 'list' : ''),
+    'targets.remove': (id, which) => targets.remove(Number(id), which === 'abroad' ? 'abroad' : 'home'),
     'targets.refresh': id => targets.refresh(Number(id)),
     'targets.refreshAll': () => targets.refreshAll(),
-    'targets.clear': () => targets.clear(),
+    'targets.clear': which => targets.clear(which === 'abroad' ? 'abroad' : 'home'),
     'ffscouter.saveKey': async (key, acknowledged) => ({ account: await ffscouter.saveKey(key, !!acknowledged) }),
     'ffscouter.removeKey': () => ffscouter.removeKey(''),
     'ffscouter.refresh': () => ffscouter.refreshSoon(true),
