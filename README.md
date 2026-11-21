@@ -1,7 +1,7 @@
 # Mentat
 
 A free Windows app for playing Torn: browser tabs on torn.com, plus a sidebar of built-in tools
-that use only the official Torn API. (It was called Torn Desktop until 2026-11-18.)
+that use only the official Torn API.
 
 ## Run it
 
