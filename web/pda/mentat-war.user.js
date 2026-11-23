@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mentat war board
 // @namespace    mentat.example.com
-// @version      1.0.18
+// @version      1.0.19
 // @description  The enemy faction with dibs, and a shared hit queue with the time each person hits the chain. For members of the faction's Mentat server. Works in Torn PDA and in browsers (Tampermonkey).
 // @author       Mentat
 // @match        https://www.torn.com/*
@@ -34,7 +34,7 @@
   if (window.top !== window.self || window.__mentatWar) return;
   window.__mentatWar = true;
 
-  const VERSION = '1.0.18';
+  const VERSION = '1.0.19';
   const SERVER = 'https://mentat.example.com';
   const GUIDE = `${SERVER}/pda/war.html`;
   const PDA_KEY = '###PDA-APIKEY###';
@@ -248,6 +248,7 @@
       finder.at = Date.now();
       await store.set('ffsFinder', { results: finder.results, at: finder.at, error: finder.error });
       render(true);
+      statusTick();
     }
   }
 
@@ -296,6 +297,62 @@
     const cls = ff === null ? '' : ff < 2 ? 'ok' : ff < 2.75 ? 'warn' : 'bad';
     const tip = `Fair fight ${ff !== null ? ff.toFixed(2) : '?'} (FFScouter): higher = tougher fight, more respect.${x.bsHuman ? ` Estimated battle stats ${x.bsHuman}.` : ''}`;
     return ` <span class="ffs ${cls}" title="${esc(tip)}">FF ${ff !== null ? ff.toFixed(2) : '?'}${x.bsHuman ? ` · ${esc(x.bsHuman)}` : ''}</span>`;
+  }
+
+  // Where each search result is, from Torn with your own key (FFScouter has no hospital data, and
+  // its premium flight data only covers trips in progress): /v2/user/{id}/basic (any key, even
+  // Public) gives status.state (Okay, Hospital, Jail, Federal, Traveling, Abroad, …), its
+  // description and, in hospital or jail, when they're out. Players abroad or flying are left out
+  // of the list (the user's rule, 2026-11-23); hospital shows the time left. Checked only while the
+  // FFScouter tab is open, one request every 1.5 s (at most 40 a minute of Torn's 100), each
+  // player again after 3 minutes, a hospital or jail stay once it should be over, and people away
+  // every 10 minutes (in case they came back).
+  const tStatus = await store.get('tStatus', {}); // id -> { state, desc, until, at }
+  const T_GAP = 1500;
+  let tBusy = false;
+  let tPausedUntil = 0;
+  let tError = '';
+  const AWAY = new Set(['Abroad', 'Traveling']);
+  function tNeedsCheck(id, now) {
+    const x = tStatus[id];
+    if (!x) return true;
+    if (x.until && x.until * 1000 <= now - 5 * SEC) return true;
+    return now - x.at > (AWAY.has(x.state) ? 10 : 3) * 60 * SEC;
+  }
+  async function statusTick() {
+    if (tBusy || panel.hidden || view !== 'main' || cfg.tab !== 'targets' || !ffs.on || !liveKey) return;
+    tBusy = true;
+    try {
+      while (!panel.hidden && view === 'main' && cfg.tab === 'targets' && liveKey && Date.now() >= tPausedUntil && !document.hidden) {
+        const now = Date.now();
+        const next = finder.results.find(r => tNeedsCheck(r.id, now));
+        if (!next) break;
+        const r = await fetch(`https://api.torn.com/v2/user/${next.id}/basic?striptags=true&key=${liveKey}&comment=Mentat`);
+        const d = await r.json();
+        if (d && d.error) {
+          const code = d.error.code;
+          tError = `Torn says: ${d.error.error || 'error'}.`;
+          if (code === 2 && !pdaKey) { liveKey = ''; await store.set('liveKey', ''); tError = 'Torn rejected your API key: enter it again in Settings (⚙).'; }
+          if (code === 6) { tStatus[next.id] = { state: 'Unknown', desc: 'Not found on Torn', until: 0, at: Date.now() }; tError = ''; }
+          else { tPausedUntil = Date.now() + (code === 5 ? 60 : 15) * SEC; break; } // 5: too many requests
+        } else {
+          const st = (d && d.profile && d.profile.status) || {};
+          tStatus[next.id] = { state: st.state || 'Unknown', desc: st.description || '', until: Number(st.until) || 0, at: Date.now() };
+          tError = '';
+        }
+        // Keep only the players in the current results.
+        const keep = new Set(finder.results.map(x => String(x.id)));
+        for (const id of Object.keys(tStatus)) if (!keep.has(id)) delete tStatus[id];
+        await store.set('tStatus', tStatus);
+        render();
+        await new Promise(res => setTimeout(res, T_GAP));
+      }
+    } catch (e) {
+      tError = 'Could not reach Torn to check statuses; trying again shortly.';
+      tPausedUntil = Date.now() + 15 * SEC;
+    } finally {
+      tBusy = false;
+    }
   }
 
   // ---- Shadow root, styles ----
@@ -1102,7 +1159,8 @@
     tabs[1].textContent = e && e.counts ? `Enemy (${e.counts.okay} okay)` : 'Enemy';
     const oc = board.ours && board.ours.members ? countsOf(board.ours.members) : null;
     tabs[2].textContent = oc ? `Faction (${oc.online} online)` : 'Faction';
-    tabs[3].textContent = finder.results.length ? `FFScouter (${finder.results.length})` : 'FFScouter';
+    const tShown = finder.results.filter(r => !(tStatus[r.id] && AWAY.has(tStatus[r.id].state))).length;
+    tabs[3].textContent = finder.results.length ? `FFScouter (${tShown})` : 'FFScouter';
     panel.querySelector('.title').textContent = own ? `War board · ${own.name}` : 'War board';
     const c = q && q.chain;
     const est = chainInfo();
@@ -1372,8 +1430,27 @@
     const myId = board.me.id;
     const queued = new Set(board.queue.entries.filter(x => x.by === myId).map(x => x.target));
     const enemyIds = new Set(((board.enemy && board.enemy.members) || []).map(m => m.id));
-    const rows = finder.results.map(r => `<li><div><div class="nm"><a href="https://www.torn.com/profiles.php?XID=${r.id}">${esc(r.name || `#${r.id}`)}</a> <span class="small">Lv ${r.level || '?'}</span>${ffHtml(r)}</div>
-        <div class="st"><span class="small">${r.lastAction ? `Last action ${ago(r.lastAction)}` : 'Last action unknown'}</span>${enemyIds.has(r.id) ? ' · <span class="warn">in the enemy faction</span>' : ''}</div></div>
+    const now = Date.now();
+    const shown = finder.results.filter(r => !(tStatus[r.id] && AWAY.has(tStatus[r.id].state)));
+    const hidden = finder.results.length - shown.length;
+    const checked = finder.results.filter(r => tStatus[r.id]).length;
+    // Out now first, then hospital / jail by who's out soonest, then not checked yet, then the rest.
+    const rankOf = r => { const x = tStatus[r.id]; if (!x) return 2; if (x.state === 'Okay') return 0; if ((x.state === 'Hospital' || x.state === 'Jail') && x.until) return 1; return 3; };
+    const order = shown.map((r, i) => ({ r, i })).sort((a, b) => rankOf(a.r) - rankOf(b.r) || (rankOf(a.r) === 1 ? tStatus[a.r.id].until - tStatus[b.r.id].until : 0) || a.i - b.i).map(x => x.r);
+    const statusHtml = r => {
+      const x = tStatus[r.id];
+      if (!x) return liveKey ? '<span class="muted">Checking status…</span>' : '<span class="muted">Status unknown</span>';
+      const left = x.until ? x.until * 1000 - now : 0;
+      if (x.state === 'Okay') return '<span class="ok">Okay</span>';
+      if (x.state === 'Hospital') return left > 0 ? `<span class="bad" title="${esc(x.desc)}">Hospital · out in <span data-until="${x.until * 1000}"></span></span>` : '<span class="warn">Leaving hospital (checking…)</span>';
+      if (x.state === 'Jail' || x.state === 'Federal') return `<span class="warn" title="${esc(x.desc)}">${x.state === 'Federal' ? 'Federal jail' : 'Jail'}${left > 0 ? ` · out in <span data-until="${x.until * 1000}"></span>` : ''}</span>`;
+      return `<span class="info">${esc(x.desc || x.state)}</span>`;
+    };
+    const statusNote = !finder.results.length ? '' : !liveKey
+      ? '<p class="small warn" style="margin:8px 0 0">Add your API key in Settings (⚙) to check who is abroad or in hospital. Until then everyone is listed.</p>'
+      : `<p class="small" style="margin:8px 0 0">${checked < finder.results.length ? `Checking where they are with your key: ${checked} of ${finder.results.length}. ` : ''}${hidden ? `${hidden} abroad or flying, not shown. ` : ''}${tError ? `<span class="err">${esc(tError)}</span>` : ''}</p>`;
+    const rows = order.map(r => `<li><div><div class="nm"><a href="https://www.torn.com/profiles.php?XID=${r.id}">${esc(r.name || `#${r.id}`)}</a> <span class="small">Lv ${r.level || '?'}</span>${ffHtml(r)}</div>
+        <div class="st">${statusHtml(r)} · <span class="small">${r.lastAction ? `Last action ${ago(r.lastAction)}` : 'Last action unknown'}</span>${enemyIds.has(r.id) ? ' · <span class="warn">in the enemy faction</span>' : ''}</div></div>
         <div class="side"><button class="btn" data-act="queueT" data-target="${r.id}" ${queued.has(r.id) ? 'disabled' : ''} title="Join the hit queue with this target">+ Queue</button>
           <a class="btn primary" href="https://www.torn.com/page.php?sid=attack&user2ID=${r.id}">Attack</a></div></li>`).join('');
     return `<div class="tf">
@@ -1384,8 +1461,8 @@
         <div class="join"><button class="btn primary" data-act="tfsearch" ${finderBusy ? 'disabled' : ''}>${finderBusy ? 'Searching…' : 'Search'}</button></div>
       </div>
       ${finder.error ? `<p class="err">${esc(finder.error)}</p>` : ''}
-      ${rows ? `<p class="small" style="margin:8px 0 0">${finder.results.length} found ${ago(finder.at)}.</p><ul class="enemy">${rows}</ul>` : ''}
-      <p class="small">Target lists from <a href="https://ffscouter.com">FFScouter</a> (${ffs.premium ? 'premium' : 'free'} account), with your FFScouter key. Searching doesn't use your Torn API limit. Fair fight: higher = tougher fight, more respect.</p>`;
+      ${finder.results.length ? `<p class="small" style="margin:8px 0 0">${finder.results.length} found ${ago(finder.at)}.</p>${statusNote}${rows ? `<ul class="enemy">${rows}</ul>` : '<p class="muted">Everyone found is abroad or flying. Try another search.</p>'}` : ''}
+      <p class="small">Target lists from <a href="https://ffscouter.com">FFScouter</a> (${ffs.premium ? 'premium' : 'free'} account), with your FFScouter key. Searching doesn't use your Torn API limit; checking where each player is does (one request per player, only while this tab is open). Fair fight: higher = tougher fight, more respect.</p>`;
   }
 
   function enemyHtml() {
@@ -1626,7 +1703,7 @@
     if (e.target.closest('a[href="#"]')) e.preventDefault();
     if (e.target.matches && e.target.matches('[data-selectall]')) { e.target.select(); return; }
     const tab = e.target.closest('[data-tab]');
-    if (tab) { cfg.tab = tab.dataset.tab; view = 'main'; saveCfg(); render(true); if (cfg.tab !== 'queue') load(); return; }
+    if (tab) { cfg.tab = tab.dataset.tab; view = 'main'; saveCfg(); render(true); if (cfg.tab !== 'queue') load(); if (cfg.tab === 'targets') statusTick(); return; }
     const lv = e.target.closest('[data-live]');
     if (lv) { cfg.live = Number(lv.dataset.live); liveLast = 0; saveCfg(); render(true); liveTick(); return; }
     const a = e.target.closest('[data-act]');
@@ -1790,6 +1867,7 @@
       ffsTick();
       myStatsTick();
       liveTick();
+      statusTick();
       energyTick();
       energyPopup();
     }, 1000);
