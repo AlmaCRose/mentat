@@ -45,7 +45,7 @@
       <li><b>Hit speed:</b> set by chain leads: the server owner, server admins and the faction positions the owner ticks in the board's settings.</li>
       <li><b>Attack pages:</b> a red light, <b>Warning: Not your turn</b>, while someone else is next in the queue; amber when you're next but it's early; green when it's your turn.</li>
       <li><b>Bonus hits:</b> during a war, when the next hit is a chain bonus (10, 25, 50, 100, 250 …) and the player you're about to attack isn't in the faction you're at war with: <b>BONUS HIT: DO NOT HIT OUTSIDE</b>.</li>
-      <li><b>FFScouter</b> (optional): fair fight and estimated battle stats with your own FFScouter key.</li>
+      <li><b>FFScouter</b> (optional): fair fight and estimated battle stats with your own FFScouter key (<a href="#ffscouter">how to add it</a>).</li>
     </ul>
   </div>
 
@@ -92,6 +92,20 @@
       <li>Open Torn in Safari, tap the war board button and sign in with your Torn API key.</li>
     </ol>
     <p class="muted">Userscripts checks for updates by itself, and the board shows a blue dot when there's a newer version.</p>
+  </div>
+
+  <h2 id="ffscouter">Add your FFScouter key (optional)</h2>
+  <div class="card">
+    <p>FFScouter adds fair fight scores and estimated battle stats to the enemy list and queued targets, and the <b>Around your range</b> filter needs it. The steps are the same in Torn PDA, desktop browsers and Safari. Do them once on each device you use the board on, because the key is kept on that device.</p>
+    <ol>
+      <li>Sign up at <a href="https://ffscouter.com">ffscouter.com</a> with your Torn API key (it's free). Once it's registered there, that Torn API key is your FFScouter key.</li>
+      <li>Open any Torn page and tap the war board button.</li>
+      <li>Tap <span class="path">⚙</span> at the top of the board to open Settings, and find the <b>FFScouter</b> section.</li>
+      <li>Paste your key into the <b>FFScouter key</b> box. In Torn PDA you can leave it empty to use Torn PDA's own key, if that's the key you registered.</li>
+      <li>Read FFScouter's <a href="https://ffscouter.com/privacy">data policy</a> and tick the box to agree to it.</li>
+      <li>Tap <b>Turn on FFScouter</b>. Settings then shows it as on, with your account type (free or premium).</li>
+    </ol>
+    <p class="muted">If the board says the key isn't registered, sign up at ffscouter.com with that key first. Your own key is needed because fair fight is worked out against your stats. Requests go only to ffscouter.com and don't count against your Torn API limit. FFScouter's <a href="https://ffscouter.com/premium">premium</a> gives more accurate estimates. To stop, tap <b>Turn off</b> in the same place.</p>
   </div>
 
   <h2>Your key and your data</h2>
