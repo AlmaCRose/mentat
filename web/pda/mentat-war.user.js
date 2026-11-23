@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mentat war board
 // @namespace    mentat.example.com
-// @version      1.0.17
+// @version      1.0.18
 // @description  The enemy faction with dibs, and a shared hit queue with the time each person hits the chain. For members of the faction's Mentat server. Works in Torn PDA and in browsers (Tampermonkey).
 // @author       Mentat
 // @match        https://www.torn.com/*
@@ -34,7 +34,7 @@
   if (window.top !== window.self || window.__mentatWar) return;
   window.__mentatWar = true;
 
-  const VERSION = '1.0.17';
+  const VERSION = '1.0.18';
   const SERVER = 'https://mentat.example.com';
   const GUIDE = `${SERVER}/pda/war.html`;
   const PDA_KEY = '###PDA-APIKEY###';
@@ -67,7 +67,7 @@
       } catch (e) { /* keep going in memory */ }
     },
   };
-  const cfg = Object.assign({ pos: null, tab: 'queue', filter: 'all', vibrate: true, open: false, live: 0, attackLight: true, lightSmall: false, sort: 'status', dir: 1, sort2: '', dir2: 1, filter: 'all', ofilter: 'all', osort: 'status', odir: 1, osort2: '', odir2: 1, online: true, idle: true, offline: true, oonline: true, oidle: true, ooffline: true, shareE: false, energyAsked: false }, await store.get('cfg', {}));
+  const cfg = Object.assign({ pos: null, tab: 'queue', filter: 'all', vibrate: true, open: false, live: 0, attackLight: true, lightSmall: false, sort: 'status', dir: 1, sort2: '', dir2: 1, filter: 'all', ofilter: 'all', osort: 'status', odir: 1, osort2: '', odir2: 1, online: true, idle: true, offline: true, oonline: true, oidle: true, ooffline: true, shareE: false, energyAsked: false, tf: { preset: '', minl: '', maxl: '', minff: 1.5, maxff: 2.5, inactive: true, fless: false } }, await store.get('cfg', {}));
   if (!['all', 'range', 'hittable', 'soon', 'hospital', 'travel', 'online', 'dibs'].includes(cfg.filter)) cfg.filter = 'all';
   if (!['all', 'online', 'okay', 'hospital', 'revivable', 'travel'].includes(cfg.ofilter)) cfg.ofilter = 'all';
   const saveCfg = () => store.set('cfg', cfg);
@@ -208,6 +208,49 @@
   }
   const ffOf = id => (ffs.on && ffsStats[id]) || null;
 
+  // Target search (Targets tab): FFScouter's target finder with your key, like Mentat's Targets tab
+  // (src/main/features/ffscouter.js findTargets): its "best respect" / "level hunting" lists, or
+  // level, fair fight, inactive-only and no-faction filters; up to 50 players. Results are kept in
+  // script storage, since the board reloads with every Torn page.
+  const finder = Object.assign({ results: [], at: 0, error: '' }, await store.get('ffsFinder', {}));
+  let finderBusy = false;
+  async function ffsFind() {
+    if (!ffs.on || !ffsKey || finderBusy) return;
+    const p = cfg.tf;
+    const params = { key: ffsKey, limit: 50 };
+    const int = (v, lo, hi) => { const n = Math.round(Number(v)); return v !== '' && Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : null; };
+    if (p.preset === 'respect' || p.preset === 'level') params.preset = p.preset;
+    else {
+      const minlevel = int(p.minl, 1, 100), maxlevel = int(p.maxl, 1, 100);
+      if (minlevel) params.minlevel = minlevel;
+      if (maxlevel) params.maxlevel = maxlevel;
+      const minff = Number(p.minff), maxff = Number(p.maxff);
+      if (minff >= 1) params.minff = minff;
+      if (maxff >= 1) params.maxff = maxff;
+      params.inactiveonly = p.inactive ? 1 : 0;
+      params.factionless = p.fless ? 1 : 0;
+    }
+    finderBusy = true;
+    finder.error = '';
+    render(true);
+    try {
+      const data = await ffsCall('get-targets', params);
+      finder.results = ((data && data.targets) || []).map(t => ({
+        id: Number(t.player_id), name: t.name || '', level: t.level || 0, ff: t.fair_fight ?? null, bs: t.bs_estimate ?? null,
+        bsHuman: t.bs_estimate_human || '', lastAction: (t.last_action || 0) * 1000,
+      })).filter(r => r.id);
+    } catch (e) {
+      finder.results = [];
+      finder.error = e.code === 17 ? 'No targets matched those filters.' : `FFScouter: ${e.message}`;
+      if (e.code in FFS_KEY_ERRORS) await ffsOff(`FFScouter turned off: ${FFS_KEY_ERRORS[e.code]}.`);
+    } finally {
+      finderBusy = false;
+      finder.at = Date.now();
+      await store.set('ffsFinder', { results: finder.results, at: finder.at, error: finder.error });
+      render(true);
+    }
+  }
+
   // Your own battle stats, for "Around your range": the real total from Torn when the board has
   // your key (Torn PDA; needs a Limited key), refreshed every 30 min; otherwise FFScouter's
   // estimate of you.
@@ -244,8 +287,8 @@
     return Math.round(Number(x.ff) * 100) / 100 >= RANGE_FF && x.bs <= mine.total * RANGE_MAX;
   }
   const compact = n => (n >= 1e9 ? `${(n / 1e9).toFixed(2)}b` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}m` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n));
-  const ffText = id => {
-    const x = ffOf(id);
+  const ffText = id => ffHtml(ffOf(id));
+  function ffHtml(x) {
     if (!x) return '';
     if (x.ff === null && x.bs === null) return ' · <span class="small">FF ?</span>';
     // Colours as in Mentat's Targets tab (src/ui/app.js): under 2 green, under 2.75 amber, else red.
@@ -253,7 +296,7 @@
     const cls = ff === null ? '' : ff < 2 ? 'ok' : ff < 2.75 ? 'warn' : 'bad';
     const tip = `Fair fight ${ff !== null ? ff.toFixed(2) : '?'} (FFScouter): higher = tougher fight, more respect.${x.bsHuman ? ` Estimated battle stats ${x.bsHuman}.` : ''}`;
     return ` <span class="ffs ${cls}" title="${esc(tip)}">FF ${ff !== null ? ff.toFixed(2) : '?'}${x.bsHuman ? ` · ${esc(x.bsHuman)}` : ''}</span>`;
-  };
+  }
 
   // ---- Shadow root, styles ----
   const host = document.createElement('div');
@@ -299,7 +342,7 @@
     .chain .score .lead { font-size: 15px; margin-left: 4px; }
     .warline { margin-top: 4px; color: #c4b8a8; font-size: 13px; font-variant-numeric: tabular-nums; }
     .ok { color: #9fde8e; } .warn { color: #ffcf8f; } .bad { color: #ff8a84; } .info { color: #9cc9f5; } .muted { color: #c4b8a8; }
-    .tabs { display: flex; gap: 6px; margin-top: 8px; }
+    .tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 8px; }
     .tabs button { flex: 1; padding: 8px; border-radius: 8px; border: 1px solid #6b6052; background: #2c2924; color: #f6f1e9; font: 600 14px inherit; font-family: inherit; cursor: pointer; }
     .tabs button[aria-selected="true"] { background: #9a6a1f; border-color: #c99a4a; color: #fff; }
     .body { overflow-y: auto; padding: 10px 12px 14px; -webkit-overflow-scrolling: touch; }
@@ -378,6 +421,8 @@
     .ffs.bad { background: #45201d; color: #ff9d96; }
     .sortrow { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; font-size: 13px; }
     .sortrow select { padding: 5px 6px; font-size: 13px; }
+    .tf input[type="number"] { width: 64px; padding: 5px 6px; font-size: 13px; }
+    .tf label { display: inline-flex; align-items: center; gap: 4px; }
     .actrow { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin: -2px 0 8px; font-size: 13px; }
     .actrow label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
     .actrow input { width: 18px; height: 18px; accent-color: #b07a22; margin: 0; }
@@ -393,6 +438,7 @@
     .tos th { color: #e9cf9f; width: 38%; font-weight: 600; }
     .modal { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 5; width: min(460px, calc(100vw - 24px)); max-height: calc(100vh - 24px); overflow-y: auto; pointer-events: auto;
       background: #1e1c19; color: #f6f1e9; border: 1px solid #c99a4a; border-radius: 12px; padding: 14px 16px; box-shadow: 0 16px 48px rgba(0,0,0,.75); font: 14px/1.45 -apple-system, "Segoe UI", Roboto, sans-serif; }
+    .enote { margin: 0 0 8px; color: #f6f1e9; }
     .modal h2 { margin: 0 0 6px; font-size: 17px; color: #e9cf9f; cursor: move; touch-action: none; user-select: none; -webkit-user-select: none; display: flex; align-items: center; gap: 8px; }
     .modal h2 .grip { color: #a99d8c; font-size: 16px; }
     .modal.dragging { opacity: .94; }
@@ -743,6 +789,8 @@
     handle.addEventListener('pointercancel', end);
     window.addEventListener('resize', () => { if (m.isConnected) placeModal(m); });
   }
+  // The faction's own note at the top of the energy opt-in (popup and Settings), at the owner's request.
+  const ENERGY_NOTE = `<p class="enote"><b>While this is optional, if you don't do it Disco will trout you and Alma will run her fingers across chalk boards while you try to sleep forever and eternity &lt;3</b></p>`;
   // The first-time popup (also shown once after the update that added this).
   function energyPopup() {
     if (cfg.energyAsked || !session || !board || root.querySelector('.modal')) return;
@@ -751,6 +799,7 @@
     m.setAttribute('role', 'dialog');
     m.setAttribute('aria-label', 'Energy tracker');
     m.innerHTML = `<h2 title="Drag to move"><span class="grip" aria-hidden="true">⠿</span>New: energy tracker</h2>
+      ${ENERGY_NOTE}
       <p style="margin:0 0 6px">Share your <b>energy</b> and <b>drug cooldown</b> with your faction, so the Faction tab can show how much energy (and how many hits) online members have ready. It's off unless you turn it on.</p>
       <p class="small" style="margin:0">While it's on, this device reads them from Torn with your own key about once a minute while you have Torn open, and sends them to your faction's Mentat server. Turn it off any time in Settings: your readings are deleted at once.</p>
       ${tosHtml()}
@@ -785,6 +834,7 @@
       ? (eStatus.error ? `<span class="err">${esc(eStatus.error)}</span>` : eStatus.at ? `<span class="ok">Shared ${ago(eStatus.at)}.</span>` : 'Starting…')
       : 'Off.';
     return `<h3>Energy sharing</h3>
+      ${ENERGY_NOTE}
       <label><input type="checkbox" data-share ${cfg.shareE ? 'checked' : ''}> Share my energy and drug cooldown with the faction</label>
       <p class="small" style="margin:4px 0">${st} ${cfg.shareE ? 'Turning it off deletes your readings from the server at once.' : 'Turning it on asks you to agree to the terms below first.'}</p>
       ${tosHtml()}`;
@@ -918,7 +968,7 @@
   panel.innerHTML = `<div class="head">
       <div class="row1" title="Drag to move"><span class="grip" aria-hidden="true">⠿</span><div class="title">War board</div><button class="iconbtn" data-act="settings" aria-label="Settings" title="Settings">⚙</button><button class="iconbtn" data-act="close" aria-label="Close" title="Close">✕</button></div>
       <div class="chain" id="chain"></div><div class="warline" id="warline"></div>
-      <div class="tabs" role="tablist"><button role="tab" data-tab="queue">Queue</button><button role="tab" data-tab="enemy">Enemy</button><button role="tab" data-tab="faction">Faction</button></div>
+      <div class="tabs" role="tablist"><button role="tab" data-tab="queue">Queue</button><button role="tab" data-tab="enemy">Enemy</button><button role="tab" data-tab="faction">Faction</button><button role="tab" data-tab="targets">FFScouter</button></div>
     </div><div class="body" id="body"></div>`;
   root.appendChild(panel);
   const $ = id => panel.querySelector(`#${id}`);
@@ -1017,7 +1067,7 @@
     if (!session) html = signInHtml();
     else if (view === 'settings') html = settingsHtml();
     else if (!board) html = `<p class="muted">${netError ? `<span class="err">${esc(netError)}</span>` : 'Loading…'}</p>`;
-    else html = updateHtml() + (cfg.tab === 'enemy' ? enemyHtml() : cfg.tab === 'faction' ? factionHtml() : queueHtml());
+    else html = updateHtml() + (cfg.tab === 'enemy' ? enemyHtml() : cfg.tab === 'faction' ? factionHtml() : cfg.tab === 'targets' ? targetsHtml() : queueHtml());
     // Redraw only when something changed, so a tap isn't lost to a redraw (times tick in place).
     const key = html;
     if (!force && key === lastBodyKey) return tickTimes();
@@ -1052,6 +1102,7 @@
     tabs[1].textContent = e && e.counts ? `Enemy (${e.counts.okay} okay)` : 'Enemy';
     const oc = board.ours && board.ours.members ? countsOf(board.ours.members) : null;
     tabs[2].textContent = oc ? `Faction (${oc.online} online)` : 'Faction';
+    tabs[3].textContent = finder.results.length ? `FFScouter (${finder.results.length})` : 'FFScouter';
     panel.querySelector('.title').textContent = own ? `War board · ${own.name}` : 'War board';
     const c = q && q.chain;
     const est = chainInfo();
@@ -1298,6 +1349,45 @@
     if (!mine) return 'Waiting for your own stats (from FFScouter)…';
     return `FF 3.00 or more and estimated stats up to 1.75× yours (${compact(mine.total)}, ${mine.from}): up to ${compact(mine.total * RANGE_MAX)}.`;
   }
+  // ---- Targets (FFScouter target search) ----
+  function readTargetForm() {
+    const v = id => panel.querySelector(`#${id}`);
+    const p = cfg.tf;
+    if (v('tfpreset')) p.preset = v('tfpreset').value;
+    if (v('tfminl')) p.minl = v('tfminl').value;
+    if (v('tfmaxl')) p.maxl = v('tfmaxl').value;
+    if (v('tfminff')) p.minff = v('tfminff').value;
+    if (v('tfmaxff')) p.maxff = v('tfmaxff').value;
+    if (v('tfinactive')) p.inactive = v('tfinactive').checked;
+    if (v('tffless')) p.fless = v('tffless').checked;
+    saveCfg();
+  }
+  function targetsHtml() {
+    if (!ffs.on) {
+      return `<p class="muted">Search FFScouter's target lists by level, fair fight and activity, then queue or attack from here. It needs your FFScouter key: turn FFScouter on in Settings (⚙).</p>
+        <p class="small"><a href="${SERVER}/pda/war.html#ffscouter">How to add your FFScouter key</a></p>`;
+    }
+    const p = cfg.tf;
+    const custom = !p.preset;
+    const myId = board.me.id;
+    const queued = new Set(board.queue.entries.filter(x => x.by === myId).map(x => x.target));
+    const enemyIds = new Set(((board.enemy && board.enemy.members) || []).map(m => m.id));
+    const rows = finder.results.map(r => `<li><div><div class="nm"><a href="https://www.torn.com/profiles.php?XID=${r.id}">${esc(r.name || `#${r.id}`)}</a> <span class="small">Lv ${r.level || '?'}</span>${ffHtml(r)}</div>
+        <div class="st"><span class="small">${r.lastAction ? `Last action ${ago(r.lastAction)}` : 'Last action unknown'}</span>${enemyIds.has(r.id) ? ' · <span class="warn">in the enemy faction</span>' : ''}</div></div>
+        <div class="side"><button class="btn" data-act="queueT" data-target="${r.id}" ${queued.has(r.id) ? 'disabled' : ''} title="Join the hit queue with this target">+ Queue</button>
+          <a class="btn primary" href="https://www.torn.com/page.php?sid=attack&user2ID=${r.id}">Attack</a></div></li>`).join('');
+    return `<div class="tf">
+        <div class="sortrow"><label>List <select id="tfpreset"><option value="">Custom filters</option><option value="respect" ${p.preset === 'respect' ? 'selected' : ''}>Best respect</option><option value="level" ${p.preset === 'level' ? 'selected' : ''}>Level hunting</option></select></label></div>
+        ${custom ? `<div class="sortrow"><label>Level <input id="tfminl" type="number" inputmode="numeric" min="1" max="100" placeholder="1" value="${esc(p.minl)}">–<input id="tfmaxl" type="number" inputmode="numeric" min="1" max="100" placeholder="100" value="${esc(p.maxl)}"></label>
+          <label>Fair fight <input id="tfminff" type="number" inputmode="decimal" min="1" max="3" step="0.05" value="${esc(p.minff)}">–<input id="tfmaxff" type="number" inputmode="decimal" min="1" max="3" step="0.05" value="${esc(p.maxff)}"></label></div>
+        <div class="sortrow"><label><input type="checkbox" id="tfinactive" ${p.inactive ? 'checked' : ''}> Inactive only</label><label><input type="checkbox" id="tffless" ${p.fless ? 'checked' : ''}> No faction</label></div>` : ''}
+        <div class="join"><button class="btn primary" data-act="tfsearch" ${finderBusy ? 'disabled' : ''}>${finderBusy ? 'Searching…' : 'Search'}</button></div>
+      </div>
+      ${finder.error ? `<p class="err">${esc(finder.error)}</p>` : ''}
+      ${rows ? `<p class="small" style="margin:8px 0 0">${finder.results.length} found ${ago(finder.at)}.</p><ul class="enemy">${rows}</ul>` : ''}
+      <p class="small">Target lists from <a href="https://ffscouter.com">FFScouter</a> (${ffs.premium ? 'premium' : 'free'} account), with your FFScouter key. Searching doesn't use your Torn API limit. Fair fight: higher = tougher fight, more respect.</p>`;
+  }
+
   function enemyHtml() {
     const e = board.enemy;
     if (!e) {
@@ -1575,6 +1665,7 @@
     if (what === 'osortdir') { cfg.odir = cfg.odir === -1 ? 1 : -1; saveCfg(); return render(true); }
     if (what === 'sortdir') { cfg.dir = cfg.dir === -1 ? 1 : -1; saveCfg(); return render(true); }
     if (what === 'ffsoff') { await ffsOff(); return render(true); }
+    if (what === 'tfsearch') { readTargetForm(); return ffsFind(); }
     if (what === 'ffson') {
       const typed = String((panel.querySelector('#ffskey') || {}).value || '').replace(/[^A-Za-z0-9]/g, '');
       if (!(panel.querySelector('#ffsack') || {}).checked) { ffs.error = "Please confirm you've read FFScouter's data policy."; return render(true); }
@@ -1655,6 +1746,7 @@
   panel.addEventListener('change', e => {
     if (e.target.id === 'hitat') act('war/queue', { act: 'hitAt', sec: Number(e.target.value) });
     if (e.target.id === 'efilter') { cfg.filter = e.target.value; saveCfg(); render(true); }
+    if (e.target.closest('.tf')) { readTargetForm(); if (e.target.id === 'tfpreset') render(true); }
     if (e.target.id === 'ofilter') { cfg.ofilter = e.target.value; saveCfg(); render(true); }
     if (e.target.closest('[data-share]')) {
       if (e.target.checked) { e.target.checked = false; cfg.energyAsked = false; energyPopup(); }
@@ -1675,6 +1767,7 @@
   });
   panel.addEventListener('keydown', e => {
     if (e.key === 'Enter' && e.target.id === 'jt') panel.querySelector('[data-act="join"]').click();
+    if (e.key === 'Enter' && /^tf/.test(e.target.id || '')) panel.querySelector('[data-act="tfsearch"]').click();
     if (e.key === 'Enter' && e.target.id === 'addtgt') panel.querySelector('[data-act="addmember"]').click();
     if (e.key === 'Enter' && e.target.id === 'tgtin') panel.querySelector('[data-act="tgtsave"]').click();
     if (e.key === 'Enter' && e.target.id === 'livekey') panel.querySelector('[data-act="livekey"]').click();
