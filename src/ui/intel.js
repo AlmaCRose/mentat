@@ -592,7 +592,7 @@ function irScoutView(V, mode = 'app') {
         <td class="num">${r && r.avgHits != null ? Math.round(r.avgHits) : '–'}</td><td class="num">${r && r.hitters != null ? r.hitters.toFixed(1) : '–'}</td>
         <td class="num">${r && r.top5 != null ? `${Math.round(r.top5 * 100)}%` : '–'}</td>
         <td class="num">${f.firstAt ? days(f.firstAt) : '–'}<div class="muted small">${num(f.samples || 0)} checks</div></td>
-        <td><button data-sc-research="${f.id}" title="Research this faction: full war record, momentum and activity report">Research</button></td></tr>`; }).join('')}
+        <td>${mode === 'app' && S.features.research && S.features.research.canPick === false ? '' : `<button data-sc-research="${f.id}" title="Research this faction: full war record, momentum and activity report">Research</button>`}</td></tr>`; }).join('')}
     </table></div>
     <div class="note">The pool is rebuilt from Torn's rank ladder every day (and after each of your wars), so factions that move up or down join or leave it automatically. Activity history is kept per player, so it follows people between factions.</div>
     ${V.log && V.log.length ? `<div class="note">${V.log.slice().reverse().map(l => `${fmtAgo(l[0])}: ${esc(l[1])}`).join('<br>')}</div>` : ''}`;

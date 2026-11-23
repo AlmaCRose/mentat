@@ -15,6 +15,12 @@ const { addReading, analyzeCountry } = require('../restock');
 
 const YATA_URL = 'https://yata.yt/api/v1/travel/export/';
 const YATA_EVERY = 2 * 60 * 1000;
+// While you have a restock alert on, this device reads YATA every 10 s itself (also when a sync
+// server collects stock), so restocks of the items you watch show up within seconds. YATA's own
+// data comes from players in each country and is usually under a minute old. After an error
+// (e.g. YATA's rate limit) it waits the normal 2 minutes before trying again.
+const YATA_FAST = 10 * 1000;
+const YATA_BACKOFF = 2 * 60 * 1000;
 const YATA_MIN_MANUAL = 30 * 1000;
 const HISTORY_KEEP = 4 * 86400 * 1000;
 const CAPACITY_EVERY = 6 * 3600 * 1000;
@@ -46,6 +52,11 @@ class TravelFeature extends EventEmitter {
     this.capacity = capacity; // the sync server has no use for your carry capacity
     // True while a sync server polls YATA instead of this PC (set by main.js).
     this.remote = () => false;
+    // Abroad items with restock alerts ("<code>:<id>"), set by core.js; any = poll YATA fast.
+    this.watchKeys = () => null;
+    this.yataErrorAt = 0;
+    this.lastStateEmit = 0;
+    this.lastStocks = null; // the last YATA export this device read (re-applied over a server copy)
     this.api = api;
     this.store = store;
     this.history = new Store(path.join(dataDir, 'travel-history.json'), { countries: {} }, { debounceMs: 120000 });
@@ -72,9 +83,17 @@ class TravelFeature extends EventEmitter {
     if (Date.now() - this.lastYata >= YATA_MIN_MANUAL) this.lastYata = 0;
   }
 
+  // Restock alerts want fast readings: the watched items, or null.
+  fastKeys() {
+    const k = this.watchKeys();
+    return k && k.size && this.store.get('travel.yata') ? k : null;
+  }
+
   async fetchYata(now) {
     this.yataInFlight = true;
     this.lastYata = now;
+    const watched = this.fastKeys();
+    const before = watched ? this.quantities(watched) : '';
     try {
       const res = await fetch(YATA_URL, { signal: AbortSignal.timeout(20000), headers: { Accept: 'application/json', 'User-Agent': 'Mentat' } });
       if (res.status === 429) throw new Error('YATA rate limit reached');
@@ -82,16 +101,38 @@ class TravelFeature extends EventEmitter {
       const d = await res.json();
       if (!d || !d.stocks) throw new Error('Unexpected YATA response');
       this.record(d.stocks);
+      this.lastStocks = d.stocks;
       this.state.error = '';
       this.state.fetchedAt = Date.now();
       this.state.yataTimestamp = (d.timestamp || 0) * 1000;
     } catch (e) {
+      this.yataErrorAt = Date.now();
       this.state.error = e.name === 'TimeoutError' ? 'YATA timed out' : e.message || 'Could not reach YATA';
     } finally {
       this.yataInFlight = false;
       this.rebuild(Date.now());
-      this.emit('state');
+      this.state.fast = !!watched;
+      // Restock alerts look at every reading; the page is redrawn only when a watched item changed
+      // (or every 2 minutes as before), so a fast poll doesn't redraw Travel every 10 s.
+      this.emit('readings');
+      const t = Date.now();
+      if (!watched || this.quantities(watched) !== before || this.state.error || t - this.lastStateEmit >= YATA_EVERY) {
+        this.lastStateEmit = t;
+        this.emit('state');
+      }
     }
+  }
+
+  // The watched items' latest quantities, as one comparable string.
+  quantities(keys) {
+    const out = [];
+    for (const key of keys) {
+      const [code, id] = key.split(':');
+      const c = this.state.countries.find(x => x.code === code);
+      const i = c && c.items.find(x => x.id === Number(id));
+      out.push(`${key}=${i ? i.quantity : '-'}`);
+    }
+    return out.join(',');
   }
 
   record(stocks) {
@@ -102,8 +143,9 @@ class TravelFeature extends EventEmitter {
       if (!s || !Array.isArray(s.stocks)) continue;
       const h = hc[c.code] || (hc[c.code] = { update: 0, items: {}, meta: {} });
       const t = (s.update || 0) * 1000;
+      if (t < h.update) continue; // older than what's here (e.g. a server copy that arrived since)
       h.latest = s.stocks.map(i => ({ id: i.id, name: i.name, quantity: i.quantity, cost: i.cost }));
-      if (t <= h.update) continue; // no new reading for this country
+      if (t === h.update) continue; // no new reading for this country
       h.update = t;
       if (!h.since) h.since = t;
       for (const i of s.stocks) {
@@ -138,6 +180,8 @@ class TravelFeature extends EventEmitter {
   // The sync server's stock history replaces this PC's copy (it polls YATA 24/7).
   applyRemote(data, meta = {}) {
     this.history.data = { countries: (data && data.countries) || {} };
+    // Fresher readings this device took itself (fast polling for restock alerts) stay on top.
+    if (this.lastStocks && this.fastKeys()) this.record(this.lastStocks);
     this.history.save();
     if (meta.fetchedAt) this.state.fetchedAt = meta.fetchedAt;
     if (meta.yataTimestamp) this.state.yataTimestamp = meta.yataTimestamp;
@@ -156,6 +200,24 @@ class TravelFeature extends EventEmitter {
       if (r[2] !== undefined && r[2] !== r[0]) pts.push([r[2], r[1]]);
     }
     return pts;
+  }
+
+  // The flight method Travel uses (auto = your last flight's) and one-way minutes for it: your
+  // override, else your measured flight, else the wiki table (−25% with the travel book). Same rules
+  // as the page's travelModel; used by restock alerts ("time to leave").
+  method() {
+    const m = this.store.get('travel.method');
+    return METHODS.includes(m) ? m : this.store.get('travel.lastMethod') || 'Standard';
+  }
+
+  flightMinutes(code, method = this.method()) {
+    const key = `${code}|${method}`;
+    const o = this.store.get('travel.override') || {};
+    if (o[key]) return o[key];
+    const l = this.store.get('travel.learned') || {};
+    if (l[key]) return l[key];
+    const c = COUNTRIES.find(x => x.code === code);
+    return c ? c.times[Math.max(0, METHODS.indexOf(method))] * (this.store.get('travel.book') ? 0.75 : 1) : 0;
   }
 
   // ---- Capacity ----
@@ -180,7 +242,8 @@ class TravelFeature extends EventEmitter {
   }
 
   tick(now) {
-    if (!this.remote() && this.store.get('travel.yata') && !this.yataInFlight && now - this.lastYata >= YATA_EVERY) this.fetchYata(now);
+    const fast = !!this.fastKeys() && now - this.yataErrorAt >= YATA_BACKOFF;
+    if ((fast || !this.remote()) && this.store.get('travel.yata') && !this.yataInFlight && now - this.lastYata >= (fast ? YATA_FAST : YATA_EVERY)) this.fetchYata(now);
     const cap = this.store.get('travel.capacityApi');
     if (this.capacity && this.api.hasKey() && !this.capInFlight && (!cap || now - cap.fetchedAt > CAPACITY_EVERY) && now - this.lastCapacityTry > 10 * 60 * 1000) this.fetchCapacity(now);
   }

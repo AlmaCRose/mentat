@@ -9,7 +9,7 @@
 //   dataDir               folder for the data files
 //   version, deviceName   for the server ("Mentat for Windows", "Mentat web")
 //   send(channel, data)   updates for the tools page(s)
-//   notify(title, body, url)
+//   notify(title, body, url, opts)   opts.urgent: middle-of-the-screen popup ({ sound, repeat })
 //   openUrl(url, newTab)  a Torn page or a link
 //   activity, archive     long-term stores for oppo research (the web app passes empty stand-ins)
 //   scoutLocal            this device may scout (Windows app: when turned on)
@@ -28,6 +28,7 @@ const { Store } = require('./store');
 const { PriceHistory } = require('./history');
 const { SyncFeature } = require('./sync');
 const { ClaimsFeature } = require('./features/claims');
+const { WarReportFeature, discordParts } = require('./features/warreport');
 const { UserFeature } = require('./features/user');
 const { ChainFeature } = require('./features/chain');
 const { TargetsFeature, herePlace } = require('./features/targets');
@@ -35,7 +36,7 @@ const { MarketFeature } = require('./features/market');
 const { TravelFeature } = require('./features/travel');
 const { BazaarFeature } = require('./features/bazaar');
 const { FFScouterFeature } = require('./features/ffscouter');
-const { AlertsFeature } = require('./features/alerts');
+const { AlertsFeature, SOUNDS } = require('./features/alerts');
 const { WarFeature } = require('./features/war');
 const { ResearchFeature } = require('./features/research');
 const { ScoutFeature } = require('./features/scout');
@@ -47,7 +48,18 @@ const { SETTABLE, OVERRIDE_PATH, TAB_LAYOUT_DEFAULTS, LIGHT_THEMES, num } = requ
 function createCore(host) {
   const { store, dataDir } = host;
   const send = (channel, data) => host.send(channel, data);
-  const notify = (title, body, url) => host.notify(title, body, url);
+  // kind: which notification this is ('trip', 'energy', 'chain', …; see ui.urgent in schema.js), or
+  // true / false when the caller decided itself (a planned item or custom alert with its own choice).
+  // Urgent ones go to the middle of the screen and stay until dismissed (popups.js / web host).
+  const urgentOpts = () => {
+    const s = SOUNDS[store.get('ui.urgentSound')] || SOUNDS.doorbell;
+    const vol = store.get('alerts.volume');
+    return { urgent: true, sound: s.count ? { ...s, volume: vol === undefined ? 0.6 : vol } : null, repeat: Number(store.get('ui.urgentRepeat')) || 0 };
+  };
+  const notify = (title, body, url, kind) => {
+    const urgent = kind === true || (typeof kind === 'string' && !!(store.get('ui.urgent') || {})[kind]);
+    return host.notify(title, body, url, urgent ? urgentOpts() : {});
+  };
 
   // ---- API + features ----
   const api = new TornApi(store);
@@ -89,16 +101,20 @@ function createCore(host) {
   // Data source: this device, or a Mentat server that collects 24/7 (see sync.js and server/).
   const sync = new SyncFeature({ store, research, travel, war, history, scout, version: host.version, onSettings: applySynced, defaultServer: host.defaultServer || '', api });
   research.remote = () => sync.covering();
+  research.ownerPicks = () => sync.ownerResearchPicks();
   // Abroad stock: this device stops polling YATA only once the server's copy has actually arrived,
   // so a device that can't get it (a failed download, say) still shows live stock.
   travel.remote = () => sync.covering() && sync.hasPulled('travel');
   scout.remote = () => sync.mode() === 'server' && sync.configured();
   user.on('flight', f => { travel.learnFlight(f); sync.markDirty(['travel.learned']); });
   if (host.migrated && host.migrated.length) sync.markDirty(host.migrated); // e.g. the new default theme, to your other devices
-  const alerts = new AlertsFeature({ store, notify, user, chain, targets, war });
+  const alerts = new AlertsFeature({ store, notify, user, chain, targets, war, travel });
+  travel.watchKeys = () => alerts.restockKeys(); // restock alerts: read YATA every 10 s
   // Casino tab: live odds come from the Mentat server (signed-in members).
   // War claims, shared through the Mentat server (War tab → Claim).
   const claims = new ClaimsFeature({ sync, war, viewing });
+  // Post-war report: facts + accolades for Discord (War tab → War report)
+  const warreport = new WarReportFeature({ api, war, dataDir });
   const casino = new CasinoFeature({ api, store, viewing, server: (method, p) => { if (!sync.configured()) throw new Error('Sign in to Mentat to load live odds.'); return sync.req(method, p); } });
   casino.on('imported', () => sync.markDirty(['gamble.log']));
   // Planner: your plan for the next few days (synced); reminders fire from here.
@@ -107,7 +123,7 @@ function createCore(host) {
   // Profile pictures: free from the profiles Targets fetches anyway, the rest a few a minute.
   const avatars = new AvatarsFeature({ api, store, dataDir });
   targets.on('profile', (id, d) => avatars.put(id, d && d.profile_image));
-  const features = { user, chain, research, scout, war, claims, targets, market, travel, bazaar, ffscouter, alerts, casino, planner, avatars, sync, ...(host.extraFeatures || {}) };
+  const features = { user, chain, research, scout, war, claims, warreport, targets, market, travel, bazaar, ffscouter, alerts, casino, planner, avatars, sync, ...(host.extraFeatures || {}) };
 
   // Settings changed on another device (from the Mentat server).
   function applySynced(changed) {
@@ -207,6 +223,13 @@ function createCore(host) {
     'war.refresh': () => war.refresh(),
     'war.watch': id => war.watch(id),
     'war.pin': (id, on) => war.pin(id, !!on),
+    'war.reportWars': () => warreport.listWars(),
+    'war.report': async (id, opts = {}) => {
+      const model = await warreport.build(id, { fresh: !!(opts && opts.fresh) });
+      return { model, parts: discordParts(model, { spectators: !!(opts && opts.spectators) }) };
+    },
+    // The report card as an image on the clipboard (desktop: export.js; the web app has none)
+    'war.reportImage': html => (host.copyImage ? host.copyImage(String(html || '')) : { unsupported: true }),
     'war.claim': (id, on) => claims.set(Number(id), !!on),
     'research.watch': id => research.research(id),
     'research.exportIntel': p => {
@@ -242,6 +265,7 @@ function createCore(host) {
     'alerts.test': id => alerts.test(String(id)),
     'alerts.preview': sound => alerts.preview(String(sound)),
     'popup.test': () => notify('Test alert', 'This is how your alerts will look.', 'https://www.torn.com/index.php'),
+    'popup.testUrgent': () => notify('Plan: Trip to Japan', 'Test of an urgent popup: in 5 min (14:05 TCT). Snooze or dismiss it.', 'https://www.torn.com/page.php?sid=travel', true),
     'market.catalog': () => market.catalogCompact(),
     'market.live': ids => market.requestLive((Array.isArray(ids) ? ids : [ids]).map(Number).filter(Boolean).slice(0, 25), 5),
     'market.watch.add': (id, below) => market.addWatch(Number(id), Number(below) || 0),
@@ -281,7 +305,7 @@ function createCore(host) {
 
   // Everything to disk (quitting, or the page going away).
   function flushAll() {
-    for (const s of [store, cache, history, travel, war, research, scout]) { try { s.flush(); } catch (e) { console.error(e); } }
+    for (const s of [store, cache, history, travel, war, research, scout, warreport]) { try { s.flush(); } catch (e) { console.error(e); } }
     try { if (activity) activity.flush(); if (archive) archive.flush(); } catch (e) { /* best effort */ }
     if (ffscouter.intelDb) ffscouter.intelDb.flush();
     sync.flush();

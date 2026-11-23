@@ -1,6 +1,6 @@
 'use strict';
 /* global S, $, panel, esc, num, cmd, money, signClass, tct, fmtDur, fmtMin, ago, countdown, link, statusPill,
-   profileUrl, attackUrl, prefs, lineChart, CHART_COLORS, syncSettingInputs, renderSafe, chainClass */
+   profileUrl, attackUrl, prefs, lineChart, CHART_COLORS, syncSettingInputs, renderSafe, chainClass, openWarReport */
 // War tools: ranked war overview with live scores and a score chart, raids/territory wars,
 // and a status board for the enemy faction (or any faction you watch) and your own.
 
@@ -270,6 +270,7 @@ function renderWar() {
       <label title="During a war, while this tab is on screen, the enemy's statuses refresh this often (one request each time: 20 a minute at 3 s, 12 at 5 s). Your other Mentat calls make room for it.">Live while watching <select data-set="war.live" data-num><option value="0">Off</option><option value="3">3 s</option><option value="5">5 s</option><option value="10">10 s</option></select></label>
       ${w.live ? `<span class="pill ok" title="Enemy statuses refresh every ${w.live} s while this tab is on screen during the war.">Live · ${w.live} s</span>` : ''}
       <button data-cmd="war.refresh">Refresh now</button>
+      <button data-war-report title="A post-war report with accolades, ready for Discord">War report</button>
     </div>
     ${w.error ? `<div class="note neg">${esc(w.error)}</div>` : ''}
     ${S.features.claims && S.features.claims.error ? `<div class="note neg">Claims: ${esc(S.features.claims.error)}</div>` : ''}
@@ -363,6 +364,7 @@ function initWar() {
     }
     const pin = e.target.closest('[data-war-pin]');
     if (pin) { cmd('war.pin', Number(pin.dataset.warPin), pin.dataset.on === '1'); return; }
+    if (e.target.closest('[data-war-report]')) { openWarReport(); return; }
     const cl = e.target.closest('[data-war-claim]');
     if (cl) {
       cl.disabled = true;

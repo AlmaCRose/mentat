@@ -113,3 +113,17 @@
 .ins-actions [hidden], .ins-how[hidden] { display: none !important; }
 @keyframes ins-up { from { transform: translateY(40px); opacity: 0; } to { transform: none; opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { #install-sheet { animation: none; } }
+
+/* Urgent alerts (host.js urgentCard): middle of the page, above everything, until dismissed. */
+.urgent-card { position: fixed; z-index: 10000; left: 50%; top: 42%; transform: translate(calc(-50% + var(--u-off, 0px)), calc(-50% + var(--u-off, 0px)));
+  width: min(460px, calc(100vw - 32px)); box-sizing: border-box; padding: 14px 16px 12px; border-radius: 10px;
+  background: var(--bg-2); color: var(--text); border: 2px solid var(--accent); border-left-width: 8px; box-shadow: 0 12px 40px var(--shadow);
+  animation: u-pulse 1.6s ease-in-out infinite; }
+.urgent-card[hidden] { display: none; }
+.urgent-card .u-app { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--accent); font-weight: 600; }
+.urgent-card .u-title { font-size: 19px; font-weight: 600; margin-top: 2px; }
+.urgent-card .u-body { font-size: 14px; margin-top: 4px; color: color-mix(in srgb, var(--text) 80%, var(--muted)); }
+.urgent-card .u-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.urgent-card .u-dismiss { margin-left: auto; }
+@keyframes u-pulse { 0%, 100% { border-color: var(--accent); } 50% { border-color: color-mix(in srgb, var(--accent) 35%, var(--bg-2)); } }
+@media (prefers-reduced-motion: reduce) { .urgent-card { animation: none; } }

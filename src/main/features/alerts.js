@@ -1,7 +1,13 @@
 'use strict';
 // Custom timer alerts: "tell me N minutes (or seconds) before <timer>", each with its own
 // sound and optional desktop popup. Uses only timers the app already tracks (bars,
-// cooldowns, travel, hospital, chain, targets, daily reset), so no extra API requests.
+// cooldowns, travel, hospital, chain, targets, daily reset, abroad restocks), so no extra API
+// requests.
+//
+// Abroad restocks (rule.item = "<country code>:<item id>") come from the travel feature's YATA
+// readings and restock analysis (restock.js): 'restock' = the predicted next restock, 'restockleave'
+// = when to leave (Travel's flight method) to land just after it, and 'restocked' = an event, not a
+// timer: the item's stock went up between two readings.
 //
 // An alert fires when its moment passes while the app is running, and only for a timer
 // that was seen counting down before that moment: opening the app when a timer is already
@@ -26,7 +32,13 @@ const TIMERS = {
   enemy: { label: 'War enemy out of hospital', url: '', done: 'is out' },
   warstart: { label: 'Ranked war starts', url: T + 'factions.php?step=your#/war/rank', done: 'Ranked war has started' },
   reset: { label: 'Daily reset (00:00 TCT)', url: T + 'index.php', done: 'Daily reset' },
+  restock: { label: 'Abroad restock (predicted)', url: T + 'page.php?sid=travel', done: 'restock due', item: true },
+  restockleave: { label: 'Time to leave for an abroad restock', url: T + 'page.php?sid=travel', done: 'Time to leave', item: true },
+  restocked: { label: 'Abroad restock seen (stock went up)', url: T + 'page.php?sid=travel', done: 'restocked', item: true, event: true },
 };
+const ITEM_KEY = /^[a-z]{3}:\d{1,7}$/;
+const RESTOCK_FRESH_MS = 10 * 60 * 1000; // a reading older than this is too late to alert on
+const RESTOCK_GAP_MS = 15 * 60 * 1000;   // readings further apart than this: don't compare them
 
 // Sounds, played by the tool window (see beep() in app.js). The soft ones are pure tones
 // with natural fades, like a struck bell or a plucked string; the classic ones are the
@@ -63,7 +75,7 @@ const fmtLeft = sec => (sec >= 120 ? `${Math.round(sec / 60)} min` : `${Math.rou
 const tct = ms => new Date(ms).toISOString().slice(11, 16);
 
 class AlertsFeature extends EventEmitter {
-  constructor({ store, notify, user, chain, targets, war }) {
+  constructor({ store, notify, user, chain, targets, war, travel }) {
     super();
     this.store = store;
     this.notify = notify;
@@ -71,9 +83,15 @@ class AlertsFeature extends EventEmitter {
     this.chain = chain;
     this.targets = targets;
     this.war = war || null;
+    this.travel = travel || null;
     this.armed = new Map(); // "<rule>|<instance>" -> end time it was armed for
     this.lastEmit = 0;
+    this.stockSeen = new Map(); // "<country>:<item>" -> { at, q } (last reading, for 'restocked')
     for (const f of [user, chain, targets, war]) if (f) f.on('state', () => this.emitSoon());
+    if (travel) {
+      travel.on('readings', () => this.checkRestocks(Date.now()));
+      travel.on('state', () => { this.checkRestocks(Date.now()); this.emitSoon(); });
+    }
   }
 
   rules() {
@@ -88,12 +106,16 @@ class AlertsFeature extends EventEmitter {
   static clean(r) {
     const timer = TIMERS[r.timer] ? r.timer : null;
     if (!timer) throw new Error('Unknown timer');
-    const before = Math.max(0, Math.min(24 * 3600, Math.round(Number(r.before) || 0)));
+    const before = TIMERS[timer].event ? 0 : Math.max(0, Math.min(24 * 3600, Math.round(Number(r.before) || 0)));
+    const item = TIMERS[timer].item ? String(r.item || '') : '';
+    if (TIMERS[timer].item && !ITEM_KEY.test(item)) throw new Error('Pick an abroad item');
     return {
+      ...(item ? { item } : {}),
       timer,
       before,
       sound: SOUNDS[r.sound] ? r.sound : 'softchime',
       desktop: r.desktop !== false,
+      urgent: !!r.urgent, // an urgent popup in the middle of the screen (stays until dismissed)
       enabled: r.enabled !== false,
       target: timer === 'target' ? Math.max(0, Math.floor(Number(r.target) || 0)) : 0,
     };
@@ -156,16 +178,69 @@ class AlertsFeature extends EventEmitter {
     }
     const d = new Date(now);
     out.push({ timer: 'reset', inst: '', end: Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1) });
+    // Abroad restocks, for the items that have alerts.
+    const keys = new Set(this.rules().filter(r => r.timer === 'restock' || r.timer === 'restockleave').map(r => r.item));
+    for (const key of keys) {
+      const a = this.abroadItem(key);
+      const st = a && a.i.stats;
+      if (!st || !st.cadence) continue;
+      const name = `${a.i.name} in ${a.c.name}`;
+      const meta = { name, unc: st.cadence.uncertainty, conf: st.cadence.confidence };
+      // Kept for 90 s after it passes, so a "when it happens" alert sees its moment arrive.
+      const next = (st.next || []).find(t => t > now - 90000);
+      if (next) out.push({ timer: 'restock', inst: key, end: next, ...meta });
+      if (this.travel) {
+        const method = this.travel.method();
+        const fMin = this.travel.flightMinutes(a.c.code, method);
+        const delay = landingDelay(st);
+        const t = (st.next || []).find(x => x + delay - fMin * 60000 > now - 90000);
+        if (t && fMin) out.push({ timer: 'restockleave', inst: key, end: t + delay - fMin * 60000, restockAt: t, method, fMin, ...meta });
+      }
+    }
     return out;
+  }
+
+  // Abroad items that have an alert switched on (Travel reads YATA every 10 s while there are any).
+  restockKeys() {
+    return new Set(this.rules().filter(r => r.enabled && r.item && TIMERS[r.timer] && TIMERS[r.timer].item).map(r => r.item));
+  }
+
+  // An abroad item by "<country>:<item id>": { c, i } from the travel feature's latest readings.
+  abroadItem(key) {
+    if (!this.travel || !key) return null;
+    const [code, id] = String(key).split(':');
+    const c = (this.travel.state.countries || []).find(x => x.code === code);
+    const i = c && c.items.find(x => x.id === Number(id));
+    return i ? { c, i } : null;
+  }
+
+  // 'restocked' alerts: the item's stock went up from one reading to the next. Only fresh
+  // readings that follow on closely count (not data that arrives after the app was closed).
+  checkRestocks(now) {
+    const rules = this.rules().filter(r => r.enabled && r.timer === 'restocked');
+    const keys = new Set(rules.map(r => r.item));
+    for (const key of [...this.stockSeen.keys()]) if (!keys.has(key)) this.stockSeen.delete(key);
+    for (const key of keys) {
+      const a = this.abroadItem(key);
+      if (!a || !a.c.update) continue;
+      const prev = this.stockSeen.get(key);
+      const q = a.i.quantity;
+      if (prev && a.c.update <= prev.at) continue;
+      this.stockSeen.set(key, { at: a.c.update, q });
+      if (!prev || q <= prev.q || a.c.update - prev.at > RESTOCK_GAP_MS || now - a.c.update > RESTOCK_FRESH_MS) continue;
+      const inst = { timer: 'restocked', inst: key, end: a.c.update, name: `${a.i.name} in ${a.c.name}`, q, prevQ: prev.q };
+      for (const rule of rules) if (rule.item === key) this.fire(rule, inst, now);
+    }
   }
 
   matches(rule, inst) {
     if (rule.timer !== inst.timer) return false;
+    if (TIMERS[rule.timer].item) return rule.item === inst.inst;
     return rule.timer !== 'target' || !rule.target || String(rule.target) === inst.inst;
   }
 
   tick(now) {
-    const rules = this.rules().filter(r => r.enabled);
+    const rules = this.rules().filter(r => r.enabled && !TIMERS[r.timer].event);
     if (!rules.length) return;
     const insts = this.instances(now);
     for (const rule of rules) {
@@ -214,6 +289,15 @@ class AlertsFeature extends EventEmitter {
     } else if (rule.timer === 'warstart') {
       title = ended ? `Ranked war started ${inst.name}` : `Ranked war ${inst.name} starts in ${fmtLeft(left)}`;
       body = `${ended ? 'Started' : 'Starts'} at ${tct(inst.end)} TCT.`;
+    } else if (rule.timer === 'restock') {
+      title = ended ? `${inst.name}: restock due now` : `${inst.name} restocks in ${fmtLeft(left)}`;
+      body = `Predicted ~${tct(inst.end)} TCT${inst.unc ? ` ±${Math.ceil(inst.unc / 60000)} min` : ''}${inst.conf ? ` (${inst.conf} confidence)` : ''}.`;
+    } else if (rule.timer === 'restockleave') {
+      title = ended ? `Leave now for ${inst.name}` : `Leave for ${inst.name} in ${fmtLeft(left)}`;
+      body = `Leave ${tct(inst.end)} TCT${inst.fMin ? ` (${inst.method === 'Private' ? 'WLT' : inst.method || ''}, ${Math.round(inst.fMin)} min)` : ''} to land just after the ~${tct(inst.restockAt || inst.end)} restock.`;
+    } else if (rule.timer === 'restocked') {
+      title = `${inst.name} restocked`;
+      body = inst.q !== undefined ? `${inst.q} in stock (was ${inst.prevQ}) at the ${tct(inst.end)} TCT reading.` : 'Its stock just went up.';
     } else if (rule.timer === 'chain') {
       title = ended ? 'Chain timer ran out' : `Chain timer: ${fmtLeft(left)} left`;
       body = `${inst.name || 'Chain'}. Hit someone to keep it going.`;
@@ -230,7 +314,7 @@ class AlertsFeature extends EventEmitter {
     const vol = this.store.get('alerts.volume');
     const s = SOUNDS[rule.sound] || SOUNDS.softchime;
     if (s.count) this.emit('beep', { ...s, volume: vol === undefined ? 0.6 : vol });
-    if (rule.desktop) this.notify(m.title, m.body, m.url);
+    if (rule.desktop || rule.urgent) this.notify(m.title, m.body, m.url, !!rule.urgent);
     const log = [{ at: now, title: m.title, rule: rule.id }, ...(this.recent || [])].slice(0, 20);
     this.recent = log;
     this.emitSoon(true);
@@ -240,8 +324,9 @@ class AlertsFeature extends EventEmitter {
   test(id) {
     const rule = this.rules().find(r => r.id === id);
     if (!rule) return;
+    const ab = TIMERS[rule.timer].item ? this.abroadItem(rule.item) : null;
     const inst = this.instances(Date.now()).find(i => this.matches(rule, i))
-      || { timer: rule.timer, inst: String(rule.target || ''), end: Date.now() + rule.before * 1000, name: rule.timer === 'target' ? 'Target' : rule.timer === 'enemy' ? 'Enemy' : '' };
+      || { timer: rule.timer, inst: String(rule.item || rule.target || ''), end: Date.now() + rule.before * 1000, name: ab ? `${ab.i.name} in ${ab.c.name}` : rule.timer === 'target' ? 'Target' : rule.timer === 'enemy' ? 'Enemy' : '' };
     this.fire(rule, inst);
   }
 
@@ -279,8 +364,25 @@ class AlertsFeature extends EventEmitter {
       timers: Object.fromEntries(Object.entries(TIMERS).map(([k, v]) => [k, v.label])),
       sounds: Object.fromEntries(Object.entries(SOUNDS).map(([k, v]) => [k, v.label])),
       targets: Object.values(this.targets.list()).map(t => ({ id: t.id, name: t.name || `#${t.id}` })),
+      itemTimers: Object.keys(TIMERS).filter(k => TIMERS[k].item),
+      // Abroad items to pick from, and names for the items alerts already use.
+      abroad: this.abroadList(),
     };
   }
+
+  abroadList() {
+    const out = [];
+    for (const c of (this.travel && this.travel.state.countries) || []) for (const i of c.items) if (i.cost) out.push({ key: `${c.code}:${i.id}`, name: i.name, country: c.name });
+    return out.sort((a, b) => a.name.localeCompare(b.name) || a.country.localeCompare(b.country));
+  }
+}
+
+// How long after a predicted restock to land, so it has happened (same as the page's travel.js).
+function landingDelay(st) {
+  const cad = st.cadence;
+  let d = (cad ? cad.uncertainty : 2 * 60000) + 60000;
+  if (st.stay) d = Math.min(d, st.stay * 0.4);
+  return Math.max(30000, d);
 }
 
 module.exports = { AlertsFeature, TIMERS, SOUNDS, fmtBefore };

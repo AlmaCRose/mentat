@@ -1,5 +1,5 @@
 'use strict';
-/* global app, S, $, $$, panel, esc, PICTURE_TABS, fmtDur, fmtAgo, num, countdown, ago, profileUrl, attackUrl, link, statusPill, cmd, renderTravel, renderMarket, initTravel, initMarket, loadCatalog, renderAlerts, initAlerts, initItemModal, renderItemModal, renderWar, initWar, renderResearch, initResearch, renderFaction, initFaction, navModel, navLabel, navIcon, navResolve, navParent, renderNavEditor, NAV_PANELS */
+/* global app, S, $, $, panel, esc, PICTURE_TABS, renderWarReport, fmtDur, fmtAgo, num, countdown, ago, profileUrl, attackUrl, link, statusPill, cmd, renderTravel, renderMarket, initTravel, initMarket, loadCatalog, renderAlerts, initAlerts, initItemModal, renderItemModal, renderWar, initWar, renderResearch, initResearch, renderFaction, initFaction, navModel, navLabel, navIcon, navResolve, navParent, renderNavEditor, NAV_PANELS */
 /* exported showPanel */
 // navActive is nav.js's (the main-bar entry on show).
 /* global navActive:writable */
@@ -751,6 +751,9 @@ document.addEventListener('click', e => {
   else if (a === 'remove' && confirm('Remove Mentat\'s copy of TornTools (and turn it off)? Chrome\'s TornTools is not affected.')) cmd('ext.remove').then(renderExtBox);
 });
 
+// Sounds offered for urgent popups (keys of SOUNDS in features/alerts.js).
+const URGENT_SOUNDS = [['doorbell', 'Doorbell'], ['softchime', 'Soft chime'], ['harp', 'Harp'], ['glass', 'Glass'], ['marimba', 'Marimba'], ['bell', 'Classic bell'], ['rise', 'Classic rising'], ['alarm', 'Classic alarm'], ['none', 'No sound']];
+
 // Popup style choice, shared by Settings and the Alerts tab.
 function popupStyleSettings() {
   return `
@@ -765,6 +768,7 @@ function popupStyleSettings() {
 
 function renderSettingsShell() {
   const el = panel('settings');
+  const urgentLabels = { trip: 'Planned trips', plan: 'Other planned items', travel: 'Landed', energy: 'Energy full', nerve: 'Nerve full', drug: 'Drug cooldown', booster: 'Booster cooldown', medical: 'Medical cooldown', hospital: 'Out of hospital/jail', events: 'New events', messages: 'New messages', chain: 'Chain timer', targets: 'Target out of hospital', market: 'Watchlist price' };
   const notifyLabels = { energy: 'Energy full', nerve: 'Nerve full', drug: 'Drug cooldown', booster: 'Booster cooldown', medical: 'Medical cooldown', travel: 'Landed', hospital: 'Out of hospital/jail', events: 'New events', messages: 'New messages' };
   el.innerHTML = `
     <div class="set-layout">
@@ -813,6 +817,14 @@ function renderSettingsShell() {
     <div class="note">Built-in alerts when something is done:</div>
     <div class="checks">${Object.entries(notifyLabels).map(([k, l]) => `<label><input type="checkbox" data-set="user.notify.${k}"> ${l}</label>`).join('')}</div>
     <div class="setting"><label>Target out of hospital</label><input type="checkbox" data-set="targets.notify"></div>
+
+    <h3>Urgent popups</h3>
+    <div class="note">For alerts you mustn't miss. An urgent popup is a large card in the middle of the screen, on top of everything, that stays until you open, snooze or dismiss it. Its sound repeats until then (for up to 10 minutes). It doesn't take the keyboard, so typing elsewhere isn't interrupted. Pick which alerts are urgent:</div>
+    <div class="checks">${Object.entries(urgentLabels).map(([k, l]) => `<label><input type="checkbox" data-set="ui.urgent.${k}"> ${l}</label>`).join('')}</div>
+    <div class="note">A planned item can also choose for itself (Planner → edit → Reminder style), and so can each custom alert (Alerts tab, "Urgent" column).</div>
+    <div class="setting"><label>Urgent sound</label><select data-set="ui.urgentSound">${URGENT_SOUNDS.map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select></div>
+    <div class="setting"><label>Repeat the sound</label><select data-set="ui.urgentRepeat" data-num><option value="0">Once only</option><option value="10">Every 10 seconds</option><option value="15">Every 15 seconds</option><option value="30">Every 30 seconds</option><option value="60">Every minute</option><option value="120">Every 2 minutes</option></select></div>
+    <div class="setting"><label>Try it</label><button data-cmd="popup.testUrgent">Show a test urgent popup</button></div>
 
     <h3>Chain alerts</h3>
     <div class="setting"><label>Chain timer</label><input type="checkbox" data-set="chain.enabled"></div>
@@ -1372,10 +1384,11 @@ const RENDER = {
   ffscouter: () => { renderTargets(); renderFFSAccount(); renderSafe('war', renderWar); renderSafe('research', renderResearch); renderSafe('faction', renderFaction); },
   research: () => { renderSafe('research', renderResearch); renderSafe('faction', renderFaction); },
   scout: () => renderSafe('research', renderResearch),
-  alerts: () => renderSafe('alerts', renderAlerts),
+  alerts: () => { renderSafe('alerts', renderAlerts); refreshRestockAlerts(); },
   casino: () => renderSafe('casino', renderCasino),
   war: () => { renderSafe('war', renderWar); updateStackNag(); },
   claims: () => renderSafe('war', renderWar),
+  warreport: () => renderWarReport(), // building progress
   sync: () => { renderSync(); renderGate(); renderMembers(); renderAccountButton(); },
   updates: () => renderUpdates(),
 };

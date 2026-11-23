@@ -82,6 +82,9 @@ class ResearchFeature extends EventEmitter {
     this.lastEmit = 0;
     // True while a sync server collects instead of this PC (set by main.js).
     this.remote = () => false;
+    // On a member's device (signed in to someone else's server): the factions the server owner picked
+    // (only the owner's pick is researched). null on your own server or without one (set by core.js).
+    this.ownerPicks = () => null;
     // Share the War tab's member checks instead of fetching again.
     war.on('members', (fid, members, now) => { if (this.tracked().some(t => t.id === fid)) this.recordMembers(fid, members, now); });
   }
@@ -111,13 +114,15 @@ class ResearchFeature extends EventEmitter {
     const out = [];
     const w = this.war.snapshot();
     const now = Date.now();
-    const manual = Number(this.store.get('research.watchId')) || 0;
+    const picks = this.remote() ? this.ownerPicks() : null;
+    const manual = picks ? 0 : Number(this.store.get('research.watchId')) || 0;
     if (manual) out.push({ id: manual, why: 'picked by you' });
+    if (picks) for (const p of picks) if (p.why === 'picked by you' && p.id) out.push({ id: p.id, name: p.name || '', why: 'picked by the server owner' });
     const r = w.wars && w.wars.ranked;
     const own = w.own && w.own.id;
     if (r && own && (!r.end || now - r.end < KEEP_AFTER_WAR)) {
       const them = r.factions.find(f => f.id !== own);
-      if (them && them.id !== manual) out.push({ id: them.id, name: them.name, why: r.start > now ? 'announced ranked war' : r.end ? 'recent ranked war' : 'ranked war' });
+      if (them && !out.some(o => o.id === them.id)) out.push({ id: them.id, name: them.name, why: r.start > now ? 'announced ranked war' : r.end ? 'recent ranked war' : 'ranked war' });
     }
     if (w.wars && own) {
       for (const x of [...w.wars.raids, ...w.wars.territory]) {
@@ -485,7 +490,7 @@ class ResearchFeature extends EventEmitter {
     const queue = tracked.reduce((n, t) => { const r = this.rec(t.id); return n + (r ? Object.keys(r.members).filter(id => Date.now() - (r.personalAt[id] || 0) >= PERSONAL_EVERY).length : 0); }, 0);
     const snapQueue = tracked.reduce((n, t) => n + this.snapQueue(this.rec(t.id)), 0);
     return {
-      fromServer: this.remote(), tracked, factions: recs, watchId: Number(this.store.get('research.watchId')) || 0, personalQueue: queue, personalGapSec: PERSONAL_GAP / 1000,
+      fromServer: this.remote(), canPick: !(this.remote() && this.ownerPicks()), tracked, factions: recs, watchId: Number(this.store.get('research.watchId')) || 0, personalQueue: queue, personalGapSec: PERSONAL_GAP / 1000,
       snapStats: SNAP_STATS, snapQueue, snapGapSec: SNAP_GAP / 1000, snapWeeks: SNAP_WEEKS,
     };
   }

@@ -1,5 +1,5 @@
 'use strict';
-/* global S, $, $$, panel, esc, num, cmd, money, pct, signClass, tct, fmtMin, fmtAgo, ago, link, marketUrl, itemLink, prefs,
+/* global restockAlerts, plBringSummary, S, $, $$, panel, esc, num, cmd, money, pct, signClass, tct, fmtMin, fmtAgo, ago, link, marketUrl, itemLink, prefs,
    CATALOG, loadCatalog, itemName, itemMV, itemType, lineChart, columnChart */
 // Travel planner. Combines YATA abroad stock (with locally measured sell-out and restock
 // patterns), Torn item prices (market value or live listings), your capacity, flight
@@ -304,6 +304,7 @@ function restockHistoryShell(M, c, t) {
       <div><div class="chart-title">Stock over time</div><div id="thist-stock"></div></div>
       <div><div class="chart-title" id="restock-hist-title">When it restocks (minute of the hour, TCT)</div><div id="restock-hist"></div></div>
     </div>
+    <div id="thist-ra"></div>
     <div id="thist-list"></div>`;
 }
 function drawRestockHist(M, code) {
@@ -328,6 +329,8 @@ function drawRestockHist(M, code) {
   // Sold out with no prediction: say how long, and whether that's late for this item.
   const outSince = !cad && st.zeroSince ? (st.lastPositive ? (st.lastPositive + st.zeroSince) / 2 : st.zeroSince) : 0;
   const late = outSince && st.selloutDelay ? `; it usually restocks ${fmtMin(st.selloutDelay.delay / 60000)} after selling out, so it's running late` : '';
+  const ra = $('#thist-ra');
+  if (ra) ra.innerHTML = restockAlerts(`${c.code}:${it.id}`, `${it.name} in ${c.name}`);
   const list = $('#thist-list');
   if (list) {
     list.innerHTML = `<div class="muted small" style="margin-top:4px">${cad ? `Restocks ${cadText(cad)}${cad.kind === 'sellout' && cad.soldOut ? ' (sold out now)' : ''}, ${cad.confidence} confidence${next.length ? ` · next ~${next.map(tct).join(', ')} ±${Math.ceil(cad.uncertainty / 60000)}m` : ''}` : outSince ? `Sold out since ${tct(outSince)} (${fmtMin((Date.now() - outSince) / 60000)} ago)${late}` : 'Not enough restocks of this item yet to time it'}${st.size ? ` · typical restock ${num(Math.round(st.size))}` : ''}${st.stay ? ` · lasts about ${fmtMin(st.stay / 60000)}` : ''} · ${num(st.restockCount || 0)} restocks seen</div>
@@ -367,8 +370,9 @@ async function addTripToPlan(btn) {
   const country = M ? M.T.countries.find(c => c.code === code) : null;
   btn.disabled = true;
   try {
+    const trip = { type: 'trip', at, country: code, method: M ? M.method : 'Standard', itemId };
     await cmd('planner.add', {
-      type: 'trip', at, country: code, method: M ? M.method : 'Standard', itemId, stay: 0,
+      ...trip, stay: 0, bring: plBringSummary(trip),
       // A 5-minute warning when there's time for one; none for a trip you're about to take.
       remind: at - Date.now() > 6 * MINUTE ? 5 : at - Date.now() > 2 * MINUTE ? 0 : -1,
       note: restockAt && itemId ? `Timed to land after the ${itemName(itemId)} restock (~${tct(restockAt)} TCT)` : '',
@@ -759,6 +763,7 @@ function itemDetailShell(r) {
   return `<div class="detail-box">
     <div class="row between"><b>${esc(r.name)} in ${esc(r.country)}</b>
       <span class="row"><button data-tlive="${r.i.id}">Check live price</button><button data-twatch="${r.i.id}">Watch price</button>${link(marketUrl(r.i.id), 'Item market')}</span></div>
+    ${restockAlerts(`${r.c.code}:${r.i.id}`, `${r.name} in ${r.country}`)}
     <div class="grid4" style="margin:8px 0">
       <div class="stat"><div class="k">Restocks</div><div class="v">${st.cadence ? cadText(st.cadence) : st.zeroSince ? 'sold out' : '–'}</div><div class="small muted">${st.cadence ? st.cadence.confidence : st.zeroSince ? `since ${tct(st.lastPositive ? (st.lastPositive + st.zeroSince) / 2 : st.zeroSince)}${st.selloutDelay ? `, usually back ${fmtMin(st.selloutDelay.delay / 60000)} after selling out` : ''}` : 'learning'}</div></div>
       <div class="stat"><div class="k">Next restock (TCT)</div><div class="v">${(st.next || []).find(t => t > Date.now() - 60000) ? tct(st.next.find(t => t > Date.now() - 60000)) : '–'}</div><div class="small muted">${st.cadence ? `±${Math.ceil(st.cadence.uncertainty / 60000)} min` : ''}</div></div>

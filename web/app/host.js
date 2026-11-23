@@ -86,7 +86,8 @@
   }, true);
 
   // ---- Alerts: a system notification when allowed and the page isn't on screen, else in the page ----
-  function notify(title, body, url) {
+  function notify(title, body, url, opts = {}) {
+    if (opts.urgent) return urgentCard(title, body, url, opts);
     const style = core ? core.store.get('ui.popupStyle') : 'app';
     if ('Notification' in window && Notification.permission === 'granted' && (document.hidden || style === 'windows')) {
       try {
@@ -96,6 +97,51 @@
       } catch (e) { /* phones only notify from the service worker: fall through */ }
     }
     if (typeof window.toast === 'function') window.toast(`${title}: ${body}`, 9000);
+  }
+
+  // Urgent alerts: a card in the middle of the page that stays until dismissed or snoozed, its sound
+  // repeating (for up to 10 minutes), plus a system notification that stays put when the page is hidden.
+  const urgentCards = [];
+  function urgentCard(title, body, url, opts) {
+    while (urgentCards.length >= 3) urgentCards[0].close();
+    const el = document.createElement('div');
+    el.className = 'urgent-card';
+    el.setAttribute('role', 'alertdialog');
+    el.setAttribute('aria-label', title);
+    el.innerHTML = '<div class="u-app">Mentat · urgent</div><div class="u-title"></div><div class="u-body"></div>'
+      + '<div class="u-row"><button class="primary" data-u="open">Open in Torn</button><button data-u="2">Snooze 2 min</button><button data-u="5">Snooze 5 min</button><button data-u="close" class="u-dismiss">Dismiss</button></div>';
+    el.querySelector('.u-title').textContent = title;
+    el.querySelector('.u-body').textContent = body || '';
+    if (!url) el.querySelector('[data-u="open"]').hidden = true;
+    let soundTimer = 0, snoozeTimer = 0, sysNote = null;
+    const stopSound = () => clearInterval(soundTimer);
+    const ring = () => {
+      el.hidden = false;
+      stopSound();
+      if (opts.sound && typeof window.beep === 'function') {
+        window.beep(opts.sound);
+        const until = Date.now() + 10 * 60e3;
+        if (opts.repeat > 0) soundTimer = setInterval(() => { if (Date.now() > until) stopSound(); else window.beep(opts.sound); }, opts.repeat * 1000);
+      }
+      if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+        try { sysNote = new Notification(title, { body, icon: '/assets/mentat-mark.png', tag: `mentat-urgent-${title}`, requireInteraction: true }); sysNote.onclick = () => { window.focus(); sysNote.close(); }; } catch (e) { /* phones: service worker only */ }
+      }
+    };
+    const entry = {
+      close() { stopSound(); clearTimeout(snoozeTimer); if (sysNote) sysNote.close(); el.remove(); urgentCards.splice(urgentCards.indexOf(entry), 1); },
+    };
+    el.addEventListener('click', e => {
+      const b = e.target.closest('[data-u]');
+      if (!b) return;
+      const a = b.dataset.u;
+      if (a === 'open') { if (url) openUrl(url); entry.close(); }
+      else if (a === 'close') entry.close();
+      else { stopSound(); if (sysNote) sysNote.close(); el.hidden = true; snoozeTimer = setTimeout(ring, Number(a) * 60e3); }
+    });
+    urgentCards.push(entry);
+    document.body.appendChild(el);
+    el.style.setProperty('--u-off', `${(urgentCards.length - 1) * 28}px`);
+    ring();
   }
 
   // ---- Files: exports download (the PDF goes through the print dialog: "Save as PDF") ----

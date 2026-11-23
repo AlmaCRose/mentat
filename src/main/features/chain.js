@@ -166,7 +166,7 @@ class ChainFeature extends EventEmitter {
       if (!s[`t${a.sec}`]) continue;
       if (prev > a.sec && rem <= a.sec && rem > a.sec - ALERT_WINDOW_SEC) {
         this.emit('beep', { ...a, volume: s.volume });
-        if (s.desktop) this.notify(`Chain timer ${fmt(a.sec)}`, `Chain at ${c.current} hits. Hit someone to keep it going.`);
+        if (s.desktop) this.notify(`Chain timer ${fmt(a.sec)}`, `Chain at ${c.current} hits. Hit someone to keep it going.`, '', 'chain');
       }
     }
   }

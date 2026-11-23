@@ -8,7 +8,7 @@
 const SYNC_UNITS = [
   'ui.theme', 'ui.themeAuto', 'ui.themeDark', 'ui.themeLight', 'ui.accent', 'ui.clockZone', 'ui.clockThird', 'ui.clock24', 'ui.browserClocks',
   'ui.popupStyle', 'ui.popupSeconds', 'ui.popupCorner', 'ui.navLayout', 'ui.navCollapsed', 'ui.tabLayout', 'ui.nav', 'ui.condensed',
-  'ui.setupDone', 'ui.buttons',
+  'ui.setupDone', 'ui.buttons', 'ui.urgent', 'ui.urgentSound', 'ui.urgentRepeat',
   'user.interval', 'user.notify',
   'chain.enabled', 'chain.alerts', 'chain.desktop', 'chain.sound', 'chain.volume', 'chain.minChain',
   'chain.t150', 'chain.t90', 'chain.t60', 'chain.t30',

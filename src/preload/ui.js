@@ -2,7 +2,7 @@
 // Bridge for the app's own UI only. Torn pages get no preload at all.
 const { contextBridge, ipcRenderer } = require('electron');
 
-const EVENTS = new Set(['tabs', 'feature', 'api', 'settings', 'beep', 'focus-address', 'browser', 'panel', 'panelSlot', 'popout', 'chatwin', 'popup', 'extensions', 'clocks']);
+const EVENTS = new Set(['tabs', 'feature', 'api', 'settings', 'beep', 'focus-address', 'browser', 'panel', 'panelSlot', 'popout', 'chatwin', 'popup', 'popup-snoozed', 'extensions', 'clocks']);
 
 contextBridge.exposeInMainWorld('app', {
   cmd: (name, ...args) => ipcRenderer.invoke('cmd', name, ...args),

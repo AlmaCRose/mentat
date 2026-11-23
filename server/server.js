@@ -51,6 +51,8 @@ const { UNIT_SET, DATASETS, PULL_ONLY, MERGE, mergePlan, prunePlan, joinUnit } =
 const { CloudBackup } = require('./cloudbackup');
 const { Members, tornWithKey } = require('./members');
 const { Claims } = require('./claims');
+const { HitQueue } = require('./hitqueue');
+const { EnergyShare } = require('./energy');
 const { Push } = require('./push');
 const { Odds } = require('./odds');
 
@@ -71,6 +73,32 @@ const log = (...a) => console.log(new Date().toISOString(), ...a);
 // the logo from src/assets. Read-only, no directory listings, nothing outside those folders.
 const WEB_DIR = path.join(__dirname, '..', 'web');
 const APP_DIR = path.join(WEB_DIR, 'app'); // the web app's own files (mentat-core.js, host.js, …)
+// War board routes that Torn's pages may call directly (see corsOrigins).
+const CORS_ROUTES = /^(login|me|logout|war\/(board|queue|claims|energy))$/;
+function serveWarMeta(req, res, publicUrl) {
+  let text;
+  try { text = fs.readFileSync(WAR_SCRIPT, 'utf8'); } catch (e) { res.writeHead(404); return res.end(); }
+  const m = /\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/.exec(text);
+  let body = m ? `${m[0]}\n` : '';
+  if (publicUrl) body = body.split('https://mentat.example.com').join(publicUrl).split('mentat.example.com').join(new URL(publicUrl).host);
+  const buf = Buffer.from(body);
+  res.writeHead(m ? 200 : 404, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-cache', 'Content-Length': buf.length, 'X-Content-Type-Options': 'nosniff' });
+  res.end(req.method === 'HEAD' ? undefined : buf);
+}
+// The war board script's @version, so boards can say when there's an update (re-read when the
+// file changes).
+const WAR_SCRIPT = path.join(WEB_DIR, 'pda', 'mentat-war.user.js');
+let warScript = { mtime: 0, version: '' };
+function warScriptVersion() {
+  try {
+    const st = fs.statSync(WAR_SCRIPT);
+    if (st.mtimeMs !== warScript.mtime) {
+      const m = /^\/\/ @version\s+([\d.]+)/m.exec(fs.readFileSync(WAR_SCRIPT, 'utf8'));
+      warScript = { mtime: st.mtimeMs, version: m ? m[1] : '' };
+    }
+  } catch (e) { /* no script here */ }
+  return warScript.version;
+}
 const UI_DIR = path.join(__dirname, '..', 'src', 'ui'); // the tools page, shared with the Windows app
 // The web app talks to this server, Torn's API and the same services as the Windows app.
 const APP_CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data: blob:; connect-src 'self' https://api.torn.com https://ffscouter.com https://weav3r.dev https://yata.yt; frame-src 'self'; worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
@@ -273,6 +301,9 @@ function loadConfig(file) {
     // Live bookmaker odds for the Bookie helper (The Odds API key; empty until sudo torn-desktop-set-odds).
     oddsKey: process.env.TD_ODDS_KEY || (cred && readSecret(path.join(cred, 'odds_key'))) || (c.oddsKeyFile && readSecret(path.resolve(dir, c.oddsKeyFile))) || '',
     publicUrl: String(c.publicUrl || '').replace(/\/+$/, ''),
+    // Pages allowed to call the war board's routes straight from the browser (CORS), for userscript
+    // apps without their own request function (some iPad/iPhone ones). Only Torn by default.
+    corsOrigins: Array.isArray(c.corsOrigins) ? c.corsOrigins.map(String) : ['https://www.torn.com', 'https://torn.com'],
     cloud: {
       enabled: !!cc.enabled || !!process.env.TD_S3_ENDPOINT,
       endpoint: String(process.env.TD_S3_ENDPOINT || cf.endpoint || cc.endpoint || '').replace(/\/+$/, ''),
@@ -374,6 +405,9 @@ class ServerSettings extends Store {
       case 'api.keyEnc': return '';
       case 'ui.panel': return '';
       case 'war.interval': return Math.max(60, Number(v) || 60);
+      // No live mode on the server: the war board's Live uses each member's own key (the user's
+      // rule, 2026-11-22), so the server key keeps the normal once-a-minute enemy refresh.
+      case 'war.live': return 0;
       case 'market.watchInterval': return Math.max(600, Number(v) || 600);
       case 'travel.yata': return this.cfg.collect.travel && v !== false;
       case 'market.bazaar': return this.cfg.collect.bazaar && v !== false;
@@ -448,8 +482,41 @@ async function run(file) {
   const push = new Push({ dataDir: cfg.dataDir, secret: cfg.pushSecret, subject: cfg.publicUrl, log, members });
   const odds = new Odds({ key: cfg.oddsKey, dataDir: cfg.dataDir, log });
   // War claims (War tab → Claim); the server's own enemy checks clear a claim when the hit lands.
-  const claims = new Claims();
+  const claims = new Claims({ api, log });
   war.on('members', (fid, list) => claims.observe(list));
+  // Hit queue + war board (web/pda/mentat-war.user.js). While anyone has the board open, the
+  // enemy's members refresh every 5 s during a war (war.live), as if the War tab were on show.
+  const nameOf = pid => {
+    const m = war.state.ours && war.state.ours.members.find(x => x.id === Number(pid));
+    return (m && m.name) || members.me(pid).name || '';
+  };
+  const queue = new HitQueue({ dataDir: cfg.dataDir, api, log, nameOf });
+  // Members' shared energy (opt-in on the war board; see energy.js).
+  const energy = new EnergyShare({ dataDir: cfg.dataDir });
+  war.viewing = panel => panel === 'war' && queue.watching().length > 0;
+  // Chain leads set the hit speed: the owner, admins, and the positions ticked on the board.
+  const positionOf = pid => {
+    const m = war.state.ours && war.state.ours.members.find(x => x.id === Number(pid));
+    return (m && m.position) || ((members.data.members || {})[pid] || {}).position || '';
+  };
+  // Admin > Chain Lead > Chain Sublead (the user's rule, 2026-11-22). Admins (owner, server admins)
+  // pick the chain lead positions; chain leads (and admins) add and remove chain subleads by name;
+  // all three have the queue powers (hit speed, adding and removing people in the queue).
+  const isAdminWho = who => !!(who.owner || who.admin || isOwnerPid(who.pid));
+  const roleOf = who => (isAdminWho(who) ? 'admin' : queue.isLeadPosition(positionOf(who.pid)) ? 'lead' : queue.isSublead(who.pid) ? 'sublead' : '');
+  const isLead = who => !!roleOf(who);
+  const canManageSubleads = who => ['admin', 'lead'].includes(roleOf(who));
+  // The faction's members, for chain leads adding people to the queue: the server's own member
+  // list (/v2/faction/members), plus anyone in the faction who has signed in to Mentat.
+  const factionRoster = () => {
+    const out = new Map();
+    for (const m of (war.state.ours && war.state.ours.members) || []) out.set(m.id, { id: m.id, name: m.name, last: m.last || '', state: m.state || '' });
+    const fid = members.factionId();
+    for (const [id, m] of Object.entries(members.data.members || {})) {
+      if (fid && m.factionId === fid && m.name && !out.has(Number(id))) out.set(Number(id), { id: Number(id), name: m.name, last: '', state: '' });
+    }
+    return [...out.values()].sort((a, b) => a.name.localeCompare(b.name));
+  };
   log(odds.configured() ? 'Live odds: on.' : 'Live odds: off (no odds_key).');
   members.onRevoke = (pid, why) => push.unsubscribe(pid, null, why);
   if (!push.enabled) log('Phone alerts are off: no push secret (credential push_secret).');
@@ -558,6 +625,8 @@ async function run(file) {
   const flushAll = () => {
     for (const st of [history.store, history.baz, travel.history, war.db, research.db, scout.db]) { try { if (st.timer) st.flush(); } catch (e) { /* next time */ } }
     try { activity.flush(); archive.flush(); } catch (e) { /* next time */ }
+    queue.flush();
+    energy.flush();
   };
   const cloud = new CloudBackup(cfg.cloud, cfg.dataDir, log, flushAll);
   if (cfg.cloud.enabled && !cloud.configured()) log('Cloud backup is on in config.json but not set up yet (endpoint, bucket and access keys).');
@@ -571,6 +640,8 @@ async function run(file) {
   const ticker = setInterval(() => {
     const now = Date.now();
     for (const f of loops) { try { f.tick(now); } catch (e) { log('Collector error:', e.stack || e.message); } }
+    try { queue.tick(now); } catch (e) { log('Hit queue error:', e.stack || e.message); }
+    try { claims.tick(now); } catch (e) { log('Dibs error:', e.stack || e.message); }
     try { cloud.tick(now); } catch (e) { log('Cloud backup error:', e.message); }
     members.tick(now).catch(e => log('Members check error:', e.message));
     if (account) api.setOthers(othersOf(account.id, null));
@@ -638,8 +709,21 @@ async function run(file) {
     const url = new URL(req.url, 'http://localhost');
     // Works with or without a path prefix from a reverse proxy (/torn-desktop/api/v1/...).
     const at = url.pathname.indexOf('/api/v1/');
+    // The war board's routes may be called from Torn's pages directly (CORS, cfg.corsOrigins).
+    const origin = String(req.headers.origin || '');
+    if (at >= 0 && origin && cfg.corsOrigins.includes(origin) && CORS_ROUTES.test(url.pathname.slice(at + 8))) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204, { 'Access-Control-Allow-Methods': 'GET, POST', 'Access-Control-Allow-Headers': 'Authorization, Content-Type, Accept', 'Access-Control-Max-Age': '600' });
+        return res.end();
+      }
+    }
     if (at < 0) {
       res.removeHeader('Cache-Control');
+      // The war board's update check file: its userscript header (managers like Userscripts on
+      // iPad/iPhone read updates from a .meta.js), made from the script so it's never out of date.
+      if (url.pathname === '/pda/mentat-war.meta.js') return serveWarMeta(req, res, cfg.publicUrl);
       if (url.pathname === '/download' || url.pathname === '/download/' || url.pathname.startsWith('/downloads/')) return serveDownload(req, res, url.pathname, cfg.downloadsDir);
       return serveFile(req, res, url.pathname, cfg.publicUrl);
     }
@@ -723,6 +807,118 @@ async function run(file) {
         return send(req, res, e.status || 500, { error: e.status ? e.message : 'Claims failed. Try again.' });
       }
       return send(req, res, 405, { error: 'Method not allowed' });
+    }
+
+    // The war board (web/pda/mentat-war.user.js): the enemy's members, claims (dibs) and the hit
+    // queue in one read. ?members=<fetchedAt the board has> leaves the members out when they
+    // haven't changed; ?lite=1 (board closed, just the button's countdown) leaves them out too.
+    if (route === 'war/board' && req.method === 'GET') {
+      if (!who.pid) return send(req, res, 400, { error: 'Sign in with your API key to use the war board.' });
+      const name = (who.me && who.me.name) || (isOwnerPid(who.pid) && account ? account.name : '') || `#${who.pid}`;
+      const lite = url.searchParams.get('lite') === '1';
+      if (!lite) queue.seen(who.pid, name);
+      // The enemy only while there is one (the user's rule, 2026-11-22): an active war, a ranked
+      // war still to come, or a faction watched from Mentat's War tab. Once the war ends the
+      // board clears at once (the War tab keeps the old enemy for 6 h; the server's last copy of
+      // the members also stays in memory after that, so it must not be sent).
+      const target = war.enemyTarget();
+      const over = target && target.source === 'ranked' && war.phase() === 'ended';
+      const e = target && !over && war.state.enemy && war.state.enemy.id === target.id ? war.state.enemy : null;
+      const have = Number(url.searchParams.get('members')) || 0;
+      const r = war.ranked();
+      const enemy = e ? { id: e.id, name: e.name, source: e.source, fetchedAt: e.fetchedAt, error: e.error || '', counts: e.counts } : null;
+      if (enemy && !lite && have !== e.fetchedAt) {
+        enemy.members = e.members.map(m => ({
+          id: m.id, name: m.name, level: m.level, state: m.state, description: m.description, until: m.until,
+          last: m.last, lastAt: m.lastAt, revivable: m.revivable, onWall: m.onWall,
+          trip: m.trip ? { country: m.trip.country, back: m.trip.back, landLo: m.trip.landLo, landHi: m.trip.landHi, expected: m.trip.expected } : null,
+          abroadSince: m.abroadSince || 0,
+        }));
+      }
+      // Our own members (the board's Faction tab, the user's request 2026-11-22), sent when the
+      // board asks (?ours=<fetchedAt it has>) and they changed since.
+      let ours = null;
+      const o = war.state.ours;
+      if (!lite && url.searchParams.has('ours') && o) {
+        ours = { fetchedAt: o.fetchedAt || 0, denied: !!o.denied, counts: o.counts || null };
+        if (Number(url.searchParams.get('ours')) !== ours.fetchedAt) {
+          ours.members = (o.members || []).map(m => ({
+            id: m.id, name: m.name, level: m.level, position: m.position, state: m.state, description: m.description, until: m.until,
+            last: m.last, lastAt: m.lastAt, revivable: m.revivable, reviveSetting: m.reviveSetting || '', earlyDischarge: !!m.earlyDischarge,
+            trip: m.trip ? { country: m.trip.country, back: m.trip.back, landLo: m.trip.landLo, landHi: m.trip.landHi, expected: m.trip.expected } : null,
+            abroadSince: m.abroadSince || 0,
+          }));
+        }
+      }
+      return send(req, res, 200, {
+        now: Date.now(),
+        ours,
+        // Shared energy, for the Faction tab (members who opted in).
+        energy: ours ? energy.view() : null,
+        me: { id: who.pid, name, lead: isLead(who), role: roleOf(who), admin: isAdminWho(who), position: positionOf(who.pid) },
+        live: { inWar: war.inWar() },
+        script: { version: warScriptVersion() },
+        positions: (who.owner || who.admin || isOwnerPid(who.pid)) && war.state.ours ? [...new Set(war.state.ours.members.map(m => m.position).filter(Boolean))] : null,
+        roster: !lite && isLead(who) ? factionRoster() : null,
+        own: war.state.own ? { id: war.state.own.id, name: war.state.own.name } : null,
+        war: { phase: war.phase(), ranked: r ? { id: r.id, start: r.start, end: r.end, target: r.target || 0, factions: r.factions.map(f => ({ id: f.id, name: f.name, score: f.score, chain: f.chain || 0 })) } : null },
+        enemy,
+        claims: lite ? null : claims.list(),
+        queue: queue.view(),
+      });
+    }
+    // Energy sharing (opt-in): a member's own reading, or { off: true } to stop and delete it.
+    if (route === 'war/energy' && req.method === 'POST') {
+      if (!who.pid) return send(req, res, 400, { error: 'Sign in with your API key to share energy.' });
+      const name = (who.me && who.me.name) || (isOwnerPid(who.pid) && account ? account.name : '') || `#${who.pid}`;
+      try {
+        const body = await readBody(req);
+        if (body.off) { energy.remove(who.pid); return send(req, res, 200, { ok: true, sharing: false }); }
+        const m = energy.report(who.pid, name, body);
+        return send(req, res, 200, { ok: true, sharing: true, at: m.at });
+      } catch (e) {
+        return send(req, res, e.status || 500, { error: e.status ? e.message : 'Sharing failed. Try again.' });
+      }
+    }
+    if (route === 'war/queue' && req.method === 'POST') {
+      if (!who.pid) return send(req, res, 400, { error: 'Sign in with your API key to use the hit queue.' });
+      const name = (who.me && who.me.name) || (isOwnerPid(who.pid) && account ? account.name : '') || `#${who.pid}`;
+      try {
+        const body = await readBody(req);
+        const act = String(body.act || '');
+        if (act === 'join' && body.for && Number(body.for) !== who.pid) {
+          // A chain lead putting a faction member in the queue (the user's request, 2026-11-22).
+          if (!isLead(who)) return send(req, res, 403, { error: 'Only chain leads can add other people to the queue.' });
+          const m = factionRoster().find(x => x.id === Number(body.for));
+          if (!m) return send(req, res, 400, { error: 'That player isn\'t in the faction.' });
+          queue.join(m.id, m.name, { target: body.target, note: body.note, addedBy: name });
+        } else if (act === 'join') queue.join(who.pid, name, { target: body.target, note: body.note });
+        else if (act === 'leave') queue.remove(who.pid, body.entry, { admin: who.admin || isLead(who) });
+        else if (act === 'done') queue.remove(who.pid, body.entry, { how: 'done' });
+        else if (act === 'skip') queue.skip(who.pid, name, body.entry);
+        else if (act === 'later') queue.later(who.pid, body.entry);
+        else if (act === 'target') queue.setTarget(who.pid, body.entry, body.target, { lead: isLead(who) });
+        else if (act === 'hitAt') {
+          if (!isLead(who)) return send(req, res, 403, { error: 'Only chain leads can set the hit speed.' });
+          queue.setHitAt(who.pid, name, body.sec);
+        } else if (act === 'leads') {
+          if (!(who.owner || who.admin || isOwnerPid(who.pid))) return send(req, res, 403, { error: 'Only the server owner and admins choose the chain leads.' });
+          queue.setLeadPositions(body.positions);
+        } else if (act === 'addSublead') {
+          if (!canManageSubleads(who)) return send(req, res, 403, { error: 'Only admins and chain leads can add chain subleads.' });
+          const m = factionRoster().find(x => x.id === Number(body.player));
+          if (!m) return send(req, res, 400, { error: 'That player isn\'t in the faction.' });
+          queue.addSublead(m.id, m.name, name);
+        } else if (act === 'removeSublead') {
+          if (!canManageSubleads(who)) return send(req, res, 403, { error: 'Only admins and chain leads can remove chain subleads.' });
+          queue.removeSublead(body.player);
+        }
+        else return send(req, res, 400, { error: 'Unknown action' });
+        queue.seen(who.pid, name);
+        return send(req, res, 200, { now: Date.now(), queue: queue.view() });
+      } catch (e) {
+        return send(req, res, e.status || 500, { error: e.status ? e.message : 'The hit queue failed. Try again.' });
+      }
     }
 
     // Bookmaker odds for the Bookie helper (any signed-in member).

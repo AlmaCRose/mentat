@@ -23,7 +23,7 @@ const { idFromUrl } = require('./features/targets');
 const { createCore } = require('./core');
 const { ActivityStore } = require('./activity');
 const { WarArchive } = require('./warchive');
-const { exportResearch, exportIntel } = require('./export');
+const { exportResearch, exportIntel, copyCardImage } = require('./export');
 const { readPlayerList } = require('./playerlist');
 
 const PRELOAD = path.join(__dirname, '..', 'preload', 'ui.js');
@@ -259,7 +259,7 @@ function start() {
   }
 
   // ---- API, features and the link to the Mentat server: core.js (shared with the web app) ----
-  const popups = new Popups({ store, preload: PRELOAD, openUrl: url => openAnywhere(url, true) });
+  const popups = new Popups({ store, preload: PRELOAD, openUrl: url => openAnywhere(url, true), beep: sound => sendTool('beep', sound) });
   const notify = createNotifier({ getWindow: () => win, openUrl: url => openAnywhere(url, true), popups, getStyle: () => store.get('ui.popupStyle') });
   const dataDir = app.getPath('userData');
   const activity = new ActivityStore(dataDir);
@@ -283,6 +283,7 @@ function start() {
     extraFeatures: { updates: updater },
     activeUrl: () => browser.activeUrl(),
     exportResearch: p => exportResearch(p, win),
+    copyImage: html => copyCardImage(html),
     exportIntel: p => exportIntel(p, win),
     publicExtra: () => ({
       popouts: { minimizeToBubble: store.get('popouts.minimizeToBubble') !== false },

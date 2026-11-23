@@ -126,8 +126,8 @@ class UserFeature extends EventEmitter {
     const pn = prev && prev.notifications;
     const nn = this.state.data.notifications;
     if (pn && nn) {
-      if (on.events && nn.events > pn.events) this.notify('Torn: new events', `${nn.events} unread event${nn.events === 1 ? '' : 's'}`, 'https://www.torn.com/events.php');
-      if (on.messages && nn.messages > pn.messages) this.notify('Torn: new messages', `${nn.messages} unread message${nn.messages === 1 ? '' : 's'}`, 'https://www.torn.com/messages.php');
+      if (on.events && nn.events > pn.events) this.notify('Torn: new events', `${nn.events} unread event${nn.events === 1 ? '' : 's'}`, 'https://www.torn.com/events.php', 'events');
+      if (on.messages && nn.messages > pn.messages) this.notify('Torn: new messages', `${nn.messages} unread message${nn.messages === 1 ? '' : 's'}`, 'https://www.torn.com/messages.php', 'messages');
     }
     this.checkAlerts(Date.now());
     this.emit('state');
@@ -151,7 +151,7 @@ class UserFeature extends EventEmitter {
     const d = this.state.data;
     if (!d) return;
     const on = this.store.get('user.notify') || {};
-    const ping = (flag, title, body, url) => () => on[flag] && this.notify(title, body, url);
+    const ping = (flag, title, body, url) => () => on[flag] && this.notify(title, body, url, flag);
 
     if (d.bars) {
       const fullAt = b => (!b || b.current >= b.maximum ? 0 : b.fullAt);

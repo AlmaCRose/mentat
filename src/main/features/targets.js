@@ -207,7 +207,7 @@ class TargetsFeature extends EventEmitter {
       const prev = this.edges[t.id];
       this.edges[t.id] = free;
       if (prev === false && free) {
-        if (s.notify) this.notify(`${t.name || '#' + t.id} is out`, st.state === 'Okay' ? 'Status: Okay' : `${st.state} timer ended`, `https://www.torn.com/profiles.php?XID=${t.id}`);
+        if (s.notify) this.notify(`${t.name || '#' + t.id} is out`, st.state === 'Okay' ? 'Status: Okay' : `${st.state} timer ended`, `https://www.torn.com/profiles.php?XID=${t.id}`, 'targets');
         if (s.autoRefresh && st.state !== 'Okay') this.update(t.id, x => { x.force = true; });
       }
     }

@@ -1,7 +1,7 @@
 'use strict';
 /* global S, $, panel, esc, num, cmd, money, pct, signClass, fmtAgo, ago, link, marketUrl, prefs,
    CATALOG, loadCatalog, itemName, itemMV, itemType, lineChart, CHART_COLORS, BAZAAR, priceSource, SOURCE_LABEL,
-   bazaarUrl, marketLowest, bazaarLowest, cheapest, wherePill, syncSettingInputs, itemLink, renderSafe */
+   bazaarUrl, marketLowest, bazaarLowest, cheapest, wherePill, syncSettingInputs, itemLink, renderSafe, deferred, restockAlerts, tct */
 // Market & trading: item lookup with live listings and price history, a watchlist with
 // price alerts, a category deal scanner, a trade calculator and the points market.
 
@@ -124,6 +124,7 @@ function renderItemDetail(out, id) {
       <div class="stat"><div class="k">Market: listed under value</div><div class="v">${st.l ? num(st.underQty) : '–'}</div></div>
       <div class="stat"><div class="k">In circulation</div><div class="v">${it ? num(it[3]) : '–'}</div></div>
       <div class="stat"><div class="k">Value trend 1d / 7d</div><div class="v" data-trend>…</div></div>
+      ${sellTile(id)}
     </div>
     <div class="cols2">
       <div><div class="chart-title">Item market listings</div>
@@ -137,9 +138,23 @@ function renderItemDetail(out, id) {
           <div class="note">Cheapest ${bl.listings.length} of ${num(bl.total)} bazaars (Weav3r, ${ago(bl.fetchedAt)}). Click a name to open their bazaar in a new Torn tab; contents change fast.</div>`
           : `<div class="muted small">${bPending ? 'Loading…' : bl && bl.error ? esc(bl.error) : 'No bazaars are listing it.'}</div>`}</div>
     </div>
+    ${abroadStockHtml(id)}
     ${shops.length ? `<div class="chart-title">Torn shops</div><table class="data"><tr><th>Where</th><th class="num">Buy</th><th class="num">Sell to shop</th></tr>
       ${shops.map(s => `<tr><td>${esc(s[1])}, ${esc(s[0])}</td><td class="num">${s[2] ? money(s[2]) : '–'}</td><td class="num">${s[3] ? money(s[3]) : '–'}</td></tr>`).join('')}</table>` : ''}
     <div class="chart-title">Price history</div><div data-chart></div>`;
+  // Typing in the selling tile only redraws the tile's figures, so the field keeps focus.
+  out.oninput = e => {
+    const tile = e.target.closest('[data-sell]');
+    if (!tile) return;
+    const f = tile.querySelector.bind(tile);
+    const all = prefs.get('market.sell', {});
+    const cost = Number(f('[data-sellcost]').value) || 0;
+    const qty = Math.max(1, Math.floor(Number(f('[data-sellqty]').value) || 1));
+    if (cost || qty > 1) all[id] = { cost, qty }; else delete all[id];
+    prefs.set('market.sell', all);
+    prefs.set('market.sellAnon', f('[data-sellanon]').checked);
+    f('[data-sellout]').innerHTML = sellBody(id);
+  };
   if (!st.l && !pending) cmd('market.live', [id]);
   if (bz.enabled && !bl && !bPending) cmd('bazaar.listings', [id]);
   getHistory(id).then(h => {
@@ -155,6 +170,112 @@ function renderItemDetail(out, id) {
     const e = out.querySelector('[data-trend]');
     if (e) e.innerHTML = t[id] ? `<span class="${signClass(t[id].d1)}">${pct(t[id].d1)}</span> / <span class="${signClass(t[id].d7)}">${pct(t[id].d7)}</span>` : '<span class="muted small">building…</span>';
   });
+}
+
+// ---- Selling profit ----
+// Sales fees from the Torn wiki (checked 2026-11-23): the item market takes a 5% sales tax
+// from the seller since 2025-06-22 (10% for an anonymous listing), deducted at the sale
+// (wiki.torn.com/wiki/Item_Market); bazaar sales pay no sales fee (wiki.torn.com/wiki/Bazaar).
+const MARKET_FEE = 0.05;
+const MARKET_FEE_ANON = 0.10;
+
+// What one unit nets in each place at today's prices: list $1 under the cheapest listing
+// (or at market value when nobody lists it), minus the market's fee; shops pay their price.
+function sellOptions(id, anon = prefs.get('market.sellAnon', false)) {
+  const mv = itemMV(id);
+  const ml = marketLowest(id);
+  const bl = bazaarLowest(id);
+  const bzOn = !!(S.features.bazaar || {}).enabled;
+  const shops = ((CATALOG.items[id] || [])[5] || []).filter(s => s[3] > 0);
+  const shop = shops.sort((a, b) => b[3] - a[3])[0];
+  const fee = anon ? MARKET_FEE_ANON : MARKET_FEE;
+  const opts = [];
+  const mList = ml ? Math.max(1, ml.price - 1) : mv;
+  if (mList) opts.push({ key: 'market', name: anon ? 'Item market (anonymous)' : 'Item market', list: mList, basis: ml ? `$1 under the lowest (${money(ml.price)})` : 'no listings, at market value', fee, feeAmt: Math.round(mList * fee), net: mList - Math.round(mList * fee), at: ml && ml.at });
+  const bList = bl ? Math.max(1, bl.price - 1) : mv;
+  if (bList) opts.push({ key: 'bazaar', name: 'Your bazaar', list: bList, basis: bl ? `$1 under the cheapest bazaar (${money(bl.price)})` : bzOn ? 'no bazaars list it, at market value' : 'bazaar prices off, at market value', fee: 0, feeAmt: 0, net: bList, at: bl && bl.at });
+  if (shop) opts.push({ key: 'shop', name: 'Sell to a Torn shop', list: shop[3], basis: `${shop[1]}, ${shop[0]} · instant`, fee: 0, feeAmt: 0, net: shop[3] });
+  const top = Math.max(0, ...opts.map(o => o.net));
+  for (const o of opts) o.best = o.net === top;
+  return { opts, top, mv, ml, bl, fee };
+}
+
+// Buying the cheapest listing and reselling it elsewhere, when that pays after fees.
+function flipIdea(id, so) {
+  const l = S.features.market && S.features.market.live[id];
+  const bz = S.features.bazaar || {};
+  const bzl = bz.listings && bz.listings[id];
+  const buys = [];
+  if (so.ml) buys.push({ key: 'market', where: 'on the item market', price: so.ml.price, qty: l && l.listings && l.listings[0] ? l.listings[0].amount : 0 });
+  if (so.bl) buys.push({ key: 'bazaar', where: 'in a bazaar', price: so.bl.price, qty: bzl && bzl.listings && bzl.listings[0] ? bzl.listings[0].quantity : 0 });
+  let best = null;
+  for (const b of buys) for (const s of so.opts) {
+    if (s.key === b.key) continue; // relisting where you bought just undercuts yourself
+    const gain = s.net - b.price;
+    if (gain > 0 && (!best || gain > best.gain)) best = { b, s, gain };
+  }
+  return best;
+}
+
+function sellBody(id) {
+  const so = sellOptions(id);
+  if (!so.opts.length) return '<div class="muted small">No prices to work from yet.</div>';
+  const mine = prefs.get('market.sell', {})[id] || {};
+  const cost = mine.cost || 0;
+  const qty = mine.qty || 1;
+  const bests = so.opts.filter(o => o.best);
+  const cell = o => {
+    const profit = cost ? o.net - cost : null;
+    return `<div class="sell-opt${o.best ? ' best' : ''}">
+      <div class="row between"><b>${esc(o.name)}</b>${o.best ? `<span class="pill ok">${bests.length > 1 ? 'tied best' : 'best'}</span>` : ''}</div>
+      <div class="small muted">${o.key === 'shop' ? 'Pays' : 'List at'} ${money(o.list)} · ${esc(o.basis)}</div>
+      ${o.fee ? `<div class="small">Fee ${Math.round(o.fee * 100)}%: <span class="neg">−${money(o.feeAmt)}</span></div>` : `<div class="small muted">${o.key === 'shop' ? 'No fee, sells now' : 'No sales fee'}</div>`}
+      <div>You get <b>${money(o.net)}</b>${qty > 1 ? ` <span class="small muted">· ×${num(qty)} = ${money(o.net * qty)}</span>` : ''}</div>
+      ${cost ? `<div class="${signClass(profit)}"><b>${profit >= 0 ? '+' : ''}${money(profit)}</b> each <span class="small">(${pct(profit / cost)})</span>${qty > 1 ? ` <span class="small">· ${profit >= 0 ? '+' : ''}${money(profit * qty)} total</span>` : ''}</div>`
+        : so.mv ? `<div class="small muted">${pct(o.net / so.mv - 1)} vs market value</div>` : ''}
+    </div>`;
+  };
+  const flip = flipIdea(id, so);
+  const others = so.opts.filter(o => !o.best);
+  const lead = others.length ? so.top - Math.max(...others.map(o => o.net)) : 0;
+  const verdict = bests.length > 1 ? `${bests.map(o => esc(o.name)).join(' and ')} net the same. `
+    : others.length ? `${esc(bests[0].name)} nets ${money(lead)} more per unit than the next best. ` : '';
+  return `<div class="sell-grid">${so.opts.map(cell).join('')}</div>
+    <div class="note" style="margin-top:4px">${verdict}${flip ? `<span class="pos">Flip: buy${flip.b.qty ? ` up to ${num(flip.b.qty)}` : ''} at ${money(flip.b.price)} ${flip.b.where}, then ${flip.s.key === 'shop' ? 'sell to the shop' : `list in ${flip.s.key === 'bazaar' ? 'your bazaar' : 'the item market'} at ${money(flip.s.list)}`} → +${money(flip.gain)} each${flip.s.fee ? ' after the fee' : ''}.</span> ` : ''}Market fee ${Math.round(MARKET_FEE * 100)}% (${Math.round(MARKET_FEE_ANON * 100)}% anonymous), bazaars none, per the Torn wiki. Undercut prices assume the cheapest listing is still there; bazaar prices can be minutes old.</div>`;
+}
+
+function sellTile(id) {
+  const mine = prefs.get('market.sell', {})[id] || {};
+  return `<div class="stat sell-tile" data-sell="${id}">
+    <div class="row between wrap"><div class="k">Selling profit at current prices</div>
+      <span class="row wrap small">
+        <label>Paid each $<input type="number" min="0" step="1" style="width:100px" value="${mine.cost || ''}" placeholder="optional" data-sellcost></label>
+        <label>Qty <input type="number" min="1" step="1" style="width:64px" value="${mine.qty || 1}" data-sellqty></label>
+        <label><input type="checkbox" data-sellanon ${prefs.get('market.sellAnon', false) ? 'checked' : ''}> Anonymous listing</label>
+      </span></div>
+    <div data-sellout>${sellBody(id)}</div>
+  </div>`;
+}
+
+// ---- Abroad stock of one item (YATA readings via Travel) ----
+function abroadStockHtml(id) {
+  const T = S.features.travel;
+  const rows = [];
+  for (const c of (T && T.countries) || []) {
+    const i = c.items.find(x => x.id === id);
+    if (i && i.cost) rows.push({ c, i });
+  }
+  if (!rows.length) return '';
+  const now = Date.now();
+  return `<div class="chart-title">Abroad stock</div>
+    <table class="data abroad-stock"><tr><th>Country</th><th class="num">In stock</th><th class="num">Shop price</th><th>Next restock (TCT)</th><th>Alerts</th></tr>
+    ${rows.map(({ c, i }) => {
+      const st = i.stats || {};
+      const next = (st.next || []).find(t => t > now - 60000);
+      return `<tr><td>${esc(c.name)}</td><td class="num">${num(i.quantity)}<div class="muted small">${fmtAgo(c.update)}</div></td><td class="num">${money(i.cost)}</td>
+        <td>${next ? `~${tct(next)}${st.cadence ? ` <span class="muted small">±${Math.ceil(st.cadence.uncertainty / 60000)} min, ${esc(st.cadence.confidence)}</span>` : ''}` : '<span class="muted small">not learned yet</span>'}</td>
+        <td>${restockAlerts(`${c.code}:${id}`, `${i.name} in ${c.name}`)}</td></tr>`;
+    }).join('')}</table>`;
 }
 
 // ---- Item pop-up ----
@@ -187,6 +308,9 @@ function renderItemModal(force = false) {
   if (!modalItem) return;
   const sig = itemModalSig(modalItem);
   if (!force && sig === modalSig) return;
+  // Wait while a field in the pop-up (selling tile) has focus; redraws once you leave it.
+  const a = document.activeElement;
+  if (!force && a && a.tagName === 'INPUT' && a.type !== 'checkbox' && $('#item-modal').contains(a)) { deferred.add(renderItemModal); return; }
   modalSig = sig;
   renderItemDetail($('#item-modal-body'), modalItem);
 }

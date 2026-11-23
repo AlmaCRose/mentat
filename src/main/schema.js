@@ -150,6 +150,15 @@ for (const t of TABS) {
 // Flight time overrides: travel.override.<country code>|<method> = minutes (0 removes it).
 const OVERRIDE_PATH = /^travel\.override\.(mex|cay|can|haw|uni|arg|swi|jap|chi|uae|sou)\|(Standard|Airstrip|Private|Business)$/;
 for (const k of Object.keys(DEFAULTS.user.notify)) SETTABLE[`user.notify.${k}`] = bool;
+// Urgent popups (notify.js / popups.js): a large card in the middle of the screen that stays until you
+// dismiss or snooze it and repeats its sound. Chosen per kind of notification (all off by default);
+// planned items and custom alerts can also choose for themselves. Synced.
+DEFAULTS.ui.urgent = { trip: false, plan: false, energy: false, nerve: false, drug: false, booster: false, medical: false, travel: false, hospital: false, events: false, messages: false, chain: false, targets: false, market: false };
+DEFAULTS.ui.urgentSound = 'doorbell';
+DEFAULTS.ui.urgentRepeat = 30; // seconds between repeats of the sound (0 = once); stops after 10 minutes
+for (const k of Object.keys(DEFAULTS.ui.urgent)) SETTABLE[`ui.urgent.${k}`] = bool;
+SETTABLE['ui.urgentSound'] = v => typeof v === 'string' && /^[a-z]{1,20}$/.test(v);
+SETTABLE['ui.urgentRepeat'] = v => [0, 10, 15, 30, 60, 120].includes(v);
 
 // One-time changes to saved settings. Returns the synced settings it changed (to send to the server).
 // 2026-11-18: the Mentat theme became the default; installs still on the old default (Torn Dark,

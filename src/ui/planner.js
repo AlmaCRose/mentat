@@ -1,7 +1,7 @@
 'use strict';
 /* global S, $, $$, panel, esc, cmd, money, tct, fmtMin, prefs, itemName, travelModel, predictStock, landingDelay, planTrip, cadPrev, cadNext,
    PM_MIN, PM_HOUR, PM_DAY, ENERGY_KINDS, NERVE_KINDS, BLOOD_LIFE, pmDayStart, pmDayKey, pmHM, simulate, dayPoints, valueAt, toast, renderSafe,
-   svgEl, makeTooltip */
+   svgEl, makeTooltip, inboundCands, fill, itemType, SPECIAL_TYPES */
 /* exported renderPlanner, initPlanner */
 // Planner tab: a plan for the next N days (synced between devices). Trips are checked against
 // the restock rhythm the Travel tab has learned (will your item be in stock when you land, or
@@ -71,6 +71,8 @@ function plTrip(it, M, now) {
   const f = fMin * PM_MIN;
   const out = { method, fMin, landAt: it.at + f, backAt: it.at + 2 * f + (it.stay || 0) * PM_MIN, lines: [], moves: [], level: 'ok' };
   const add = (level, text) => { out.lines.push({ level, text }); if (level === 'bad' || (level === 'warn' && out.level !== 'bad')) out.level = level; };
+  out.bring = plBring(it, M, method, out.landAt);
+  if (out.bring) out.lines.push({ level: 'money', text: plBringText(out.bring, it) });
   const u = S.features.user && S.features.user.data;
   if (u && u.travel && it.at < u.travel.arriveAt) add('warn', `You're flying to ${esc(u.travel.destination)} now and land at ${pmHM(u.travel.arriveAt)}.`);
   else if (u && u.status && u.status.state === 'Abroad' && it.at < now + f) add('warn', `You're abroad now: fly back to Torn first (${fmtMin(fMin)} with ${esc(method)}).`);
@@ -137,6 +139,56 @@ function plTrip(it, M, now) {
   return out;
 }
 
+// ---- How much money to bring on a trip ----
+// A full load of the item you picked at the shop price abroad (YATA's readings), with your
+// flower/plushie slots filled with the best of those likely in stock when you land; with no item
+// picked, the best load by the stock forecast. Plus the Standard ticket, which is paid in cash when
+// you fly (Airstrip and WLT cost no cash, Business uses a Business Class Ticket item).
+function plBring(it, M, method, landAt) {
+  const T = S.features.travel;
+  const c = T && T.countries.find(x => x.code === it.country);
+  if (!M || !c || !c.items.length) return null;
+  const meta = (T.countriesMeta || []).find(x => x.code === it.country);
+  const ticket = method === 'Standard' && meta ? meta.ticket || 0 : 0;
+  // Capacity from your API key or your setting; the per-method default otherwise.
+  const general = M.capSource === 'default for this method' ? (method === 'Standard' ? 10 : 15) : M.general;
+  const cands = inboundCands(M, c, landAt);
+  let lines = [];
+  let basis = 'forecast';
+  if (it.itemId) {
+    const f = cands.find(x => x.id === it.itemId);
+    if (!f) return { cash: 0, ticket, total: ticket, lines: [], basis: 'missing' };
+    const special = SPECIAL_TYPES.has(itemType(it.itemId));
+    lines.push({ id: f.id, name: f.name, qty: general + (special ? M.special : 0), cost: f.cost });
+    if (!special && M.special) {
+      const sp = fill(cands.filter(x => x.id !== it.itemId && SPECIAL_TYPES.has(itemType(x.id))), 0, M.special);
+      lines.push(...sp.lines.map(l => ({ id: l.id, name: l.name, qty: l.qty, cost: l.cost, extra: true })));
+    }
+    basis = 'item';
+  } else {
+    lines = fill(cands, general, M.special).lines.map(l => ({ id: l.id, name: l.name, qty: l.qty, cost: l.cost }));
+  }
+  const cash = lines.reduce((s, l) => s + l.qty * l.cost, 0);
+  return { cash, ticket, total: cash + ticket, lines, basis, capacity: general + M.special };
+}
+function plBringText(b, it) {
+  const parts = b.lines.map(l => `${l.qty} ${esc(l.name)} at ${money(l.cost)} (${money(l.qty * l.cost)})${l.extra ? ' for your flower/plushie slots' : ''}`);
+  if (b.ticket) parts.push(`${money(b.ticket)} Standard ticket`);
+  // (An item missing from the stock reading has its own warning below; only the ticket counts here.)
+  const why = b.basis === 'forecast' && !b.lines.length ? ' (nothing worth buying is forecast in stock)' : '';
+  return `Bring <b>${money(b.total)}</b>${parts.length ? `: ${parts.join(' + ')}` : ''}${why}.${b.basis === 'forecast' && b.lines.length ? ' <span class="muted">No item picked: the best load by the stock forecast.</span>' : ''}`;
+}
+// The short form kept with the plan item for its reminder (worked out here, sent with the item).
+function plBringSummary(d) {
+  const M = S.features.travel && S.settings ? travelModel() : null;
+  if (!M || d.type !== 'trip') return undefined;
+  const method = d.method || M.method;
+  const b = plBring(d, M, method, d.at + plFlightMin(d.country, method) * PM_MIN);
+  if (!b || !b.total) return undefined;
+  const text = [...b.lines.map(l => `${l.qty} ${l.name}`), ...(b.ticket ? ['ticket'] : [])].join(' + ');
+  return { total: Math.round(b.total), text: text.slice(0, 120) };
+}
+
 // ---- The whole plan, projected ----
 function plModel() {
   const P = S.features.planner;
@@ -196,13 +248,13 @@ function plItemRow(it, mdl) {
   const t = PL_TYPES[it.type] || PL_TYPES.note;
   const tripLine = trip ? `<div class="pl-meta">${esc(trip.method === 'Private' ? 'WLT' : trip.method)} · ${fmtMin(trip.fMin)} each way · lands ${plWhen(trip.landAt)} · back in Torn ${plWhen(trip.backAt)}${it.stay ? ` (${fmtMin(it.stay)} abroad)` : ''}${trip.profit ? ` · ≈ ${money(trip.profit.total)} profit with ${trip.profit.qty} ${esc(plItemName(it.itemId))}` : ''}</div>` : '';
   const proj = plProjection(it, r);
-  const msg = l => `<div class="pl-msg ${l.level}"><span class="pl-msg-ic" aria-hidden="true">${l.level === 'ok' ? '✓' : l.level === 'info' ? 'i' : '!'}</span><span>${l.text}</span></div>`;
+  const msg = l => `<div class="pl-msg ${l.level}"><span class="pl-msg-ic" aria-hidden="true">${l.level === 'ok' ? '✓' : l.level === 'info' ? 'i' : l.level === 'money' ? '$' : '!'}</span><span>${l.text}</span></div>`;
   const moves = trip && trip.moves.length && !past ? `<div class="pl-moves">${trip.moves.map(m => `<button data-plmove="${it.id}" data-at="${m.at}">${esc(m.label)}</button>`).join('')}</div>` : '';
   return `<li class="pl-item ${past ? 'past' : ''} ${it.done ? 'done' : ''}" data-plitem="${it.id}">
     <span class="pl-time" title="${esc(new Date(it.at).toLocaleString())} your time">${pmHM(it.at)}</span>
     <svg class="pl-icon" viewBox="0 0 24 24" aria-hidden="true">${t.icon}</svg>
     <div class="pl-main">
-      <div class="pl-title">${esc(plTitle(it))}${past ? ' <span class="pill">past</span>' : ''}${it.remind >= 0 ? ` <span class="muted small" title="Reminder">⏰ ${it.remind ? `${it.remind} min before` : 'at the time'}</span>` : ''}</div>
+      <div class="pl-title">${esc(plTitle(it))}${past ? ' <span class="pill">past</span>' : ''}${it.remind >= 0 ? ` <span class="muted small" title="Reminder">⏰ ${it.remind ? `${it.remind} min before` : 'at the time'}${plUrgent(it) ? ' · <b class="pl-urgent" title="Urgent popup in the middle of the screen">urgent</b>' : ''}</span>` : ''}</div>
       ${tripLine}
       ${proj && !past ? `<div class="pl-meta">${proj}</div>` : ''}
       ${it.note && it.type !== 'note' ? `<div class="pl-meta pl-note">${esc(it.note)}</div>` : ''}
@@ -502,6 +554,16 @@ function plTimeline(host, mdl, d0) {
   });
 }
 
+// Urgent reminders (a large popup in the middle of the screen): the item's own choice, else
+// Settings → Notifications → Urgent popups (planned trips / other planned items).
+function plUrgentDefault(type) {
+  const u = (S.settings && S.settings.ui && S.settings.ui.urgent) || {};
+  return !!(type === 'trip' ? u.trip : u.plan);
+}
+function plUrgent(it) {
+  return it.urgent === 'on' || (it.urgent !== 'off' && plUrgentDefault(it.type));
+}
+
 // ---- Add / edit form ----
 function plDefaultTime(day) {
   const now = Date.now();
@@ -513,7 +575,7 @@ function plDefaultTime(day) {
 function plDraftDefaults(type, prev = {}) {
   const ts = (S.settings && S.settings.travel) || {};
   const M = S.features.travel && S.settings ? travelModel() : null;
-  const base = { type, at: prev.at, note: prev.note || '', remind: prev.remind !== undefined ? prev.remind : type === 'trip' ? 5 : -1 };
+  const base = { type, at: prev.at, note: prev.note || '', remind: prev.remind !== undefined ? prev.remind : type === 'trip' ? 5 : -1, urgent: prev.urgent || '' };
   if (type === 'trip') return { ...base, country: prev.country || 'mex', method: prev.method || (M ? M.method : ts.method === 'auto' ? 'Standard' : ts.method) || 'Standard', itemId: prev.itemId || 0, stay: prev.stay || 0 };
   if (type === 'gym' || type === 'crimes') return { ...base, amount: prev.amount || 0 };
   if (type === 'energy') return { ...base, kind: prev.kind || 'xanax', amount: prev.amount || 0 };
@@ -570,6 +632,7 @@ function plForm(mdl) {
       ${fields}
       ${field(d.type === 'note' ? 'Note' : 'Note (optional)', `<input name="note" type="text" maxlength="300" value="${esc(d.note || '')}" ${d.type === 'note' ? 'required' : ''}>`, true)}
       ${field('Reminder', sel('remind', PL_REMIND, d.remind))}
+      ${d.remind >= 0 ? field('Reminder style', sel('urgent', [['', `As in Settings (${plUrgentDefault(d.type) ? 'urgent' : 'normal popup'})`], ['on', 'Urgent: middle of the screen'], ['off', 'Normal popup']], d.urgent || '')) : ''}
     </div>
     ${hint ? `<div class="note">${esc(hint)}</div>` : ''}
     <div class="pl-preview-slot">${plPreview(mdl, d)}</div>
@@ -584,7 +647,7 @@ function plPreview(mdl, d) {
   if (d.type === 'trip' && d.at) {
     const tr = plTrip({ ...d, id: 'draft' }, mdl.M, mdl.now);
     preview = `<div class="pl-preview"><div class="pl-meta">Lands ${plWhen(tr.landAt)} · back in Torn ${plWhen(tr.backAt)} (${fmtMin(tr.fMin)} each way)${tr.profit ? ` · ≈ ${money(tr.profit.total)} profit` : ''}</div>
-      ${tr.lines.map(l => `<div class="pl-msg ${l.level}"><span class="pl-msg-ic" aria-hidden="true">${l.level === 'ok' ? '✓' : l.level === 'info' ? 'i' : '!'}</span><span>${l.text}</span></div>`).join('')}
+      ${tr.lines.map(l => `<div class="pl-msg ${l.level}"><span class="pl-msg-ic" aria-hidden="true">${l.level === 'ok' ? '✓' : l.level === 'info' ? 'i' : l.level === 'money' ? '$' : '!'}</span><span>${l.text}</span></div>`).join('')}
       ${tr.moves.length ? `<div class="pl-moves">${tr.moves.map(m => `<button type="button" data-pldraftmove="${m.at}">${esc(m.label)}</button>`).join('')}</div>` : ''}</div>`;
   }
   return preview;
@@ -599,7 +662,7 @@ function plReadForm(f) {
   F.day = v('day') || F.day;
   const hm = (v('time') || pmHM(d.at)).split(':').map(Number);
   d.at = Date.parse(`${F.day}T00:00:00Z`) + ((hm[0] || 0) * 60 + (hm[1] || 0)) * PM_MIN;
-  for (const n of ['country', 'method', 'kind', 'cd', 'note']) if (v(n) !== undefined) d[n] = v(n);
+  for (const n of ['country', 'method', 'kind', 'cd', 'note', 'urgent']) if (v(n) !== undefined) d[n] = v(n);
   for (const n of ['itemId', 'stay', 'amount', 'count', 'cdHours', 'remind']) if (v(n) !== undefined) d[n] = Number(v(n));
   if (v('type') && v('type') !== d.type) {
     const keep = F.remindSet ? { remind: d.remind } : {};
@@ -736,7 +799,7 @@ function initPlanner() {
       return;
     }
     // Fields that change what the form shows: draw it again.
-    if (['type', 'country', 'kind', 'method', 'itemId', 'day'].includes(t.name)) {
+    if (['type', 'country', 'kind', 'method', 'itemId', 'day', 'remind'].includes(t.name)) {
       PLS.focus = t.name;
       renderPlanner(true);
     }
@@ -749,6 +812,7 @@ function initPlanner() {
     const F = PLS.form;
     const d = { ...F.draft };
     if (d.type === 'trip' && !d.itemId) d.itemId = 0;
+    d.bring = d.type === 'trip' ? plBringSummary(d) || null : null; // null clears an old one
     if ((d.type === 'energy' || d.type === 'nerve') && !d.amount) delete d.amount;
     delete d.id; delete d.updatedAt;
     try {

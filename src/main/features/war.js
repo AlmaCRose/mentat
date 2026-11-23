@@ -67,6 +67,8 @@ function member(m) {
     position: m.position || '',
     days: m.days_in_faction || 0,
     revivable: !!m.is_revivable,
+    reviveSetting: m.revive_setting && m.revive_setting !== 'Unknown' ? m.revive_setting : '', // own faction, with permissions
+    earlyDischarge: !!m.has_early_discharge,
     onWall: !!m.is_on_wall,
     state: st.state || '',
     description: st.description || '',

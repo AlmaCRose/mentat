@@ -46,12 +46,16 @@ class PlannerFeature extends EventEmitter {
     const at = Number(r.at);
     if (!Number.isFinite(at) || at < now - 30 * 86400e3 || at > now + 400 * 86400e3) throw new Error('Pick a time within the plan');
     const it = { type: r.type, at: Math.round(at / 1000) * 1000, note: str(r.note, 300), remind: int(r.remind, -1, 1440, -1), done: !!r.done };
+    // Reminder style: '' = the Settings choice for this kind, 'on' = urgent popup, 'off' = normal.
+    if (r.urgent === 'on' || r.urgent === 'off') it.urgent = r.urgent;
     if (r.type === 'trip') {
       if (!CODES.has(r.country)) throw new Error('Pick a country');
       it.country = r.country;
       it.method = METHODS.includes(r.method) ? r.method : '';
       it.itemId = int(r.itemId, 0, 1e6, 0);
       it.stay = int(r.stay, 0, 24 * 60, 0);
+      // Money to bring (worked out on the page from abroad shop prices + the ticket), for the reminder.
+      if (r.bring && typeof r.bring === 'object' && Number(r.bring.total) > 0) it.bring = { total: int(r.bring.total, 0, 1e13, 0), text: str(r.bring.text, 120) };
     } else if (r.type === 'gym' || r.type === 'crimes') {
       it.amount = int(r.amount, 0, 100000, 0); // 0 = all you have
     } else if (r.type === 'energy' || r.type === 'nerve') {
@@ -150,7 +154,10 @@ class PlannerFeature extends EventEmitter {
       firedChanged = true;
       if (now - at > MAX_LATE) continue;
       const when = it.remind ? `in ${it.remind} min (${new Date(it.at).toISOString().slice(11, 16)} TCT)` : 'now';
-      this.notify(`Plan: ${this.title(it)}`, `${when}${it.note && it.type !== 'note' ? ` · ${it.note}` : ''}`, this.url(it));
+      // Urgent popup: the item's own choice, else the setting for trips / other plan items.
+      const kind = it.urgent === 'on' ? true : it.urgent === 'off' ? false : it.type === 'trip' ? 'trip' : 'plan';
+      const bring = it.type === 'trip' && it.bring && it.bring.total ? ` · bring $${it.bring.total.toLocaleString('en-US')}${it.bring.text ? ` (${it.bring.text})` : ''}` : '';
+      this.notify(`Plan: ${this.title(it)}`, `${when}${bring}${it.note && it.type !== 'note' ? ` · ${it.note}` : ''}`, this.url(it), kind);
     }
     // Once an hour: forget old reminders and drop items more than a week in the past.
     if (now - this.lastPrune > 3600e3) {

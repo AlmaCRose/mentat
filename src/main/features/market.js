@@ -180,7 +180,7 @@ class MarketFeature extends EventEmitter {
     this.store.set('market.watch', all);
     const it = this.item(id);
     const name = it ? it[0] : `Item ${id}`;
-    this.notify(`${name}: $${price.toLocaleString('en-US')} in ${where}`, `At or below your $${w.below.toLocaleString('en-US')} target.`, marketUrl(id));
+    this.notify(`${name}: $${price.toLocaleString('en-US')} in ${where}`, `At or below your $${w.below.toLocaleString('en-US')} target.`, marketUrl(id), 'market');
   }
 
   checkAllWatches() {

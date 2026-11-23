@@ -661,6 +661,12 @@ table.data tr.detail > td { padding: 0; background: var(--bg); }
 .detail-box { padding: 10px 12px; border-left: 2px solid var(--accent); }
 .detail-box table.data { margin-top: 6px; }
 .stat .v.small { font-size: 12px; font-weight: 500; }
+/* Selling profit tile in the item view: one full row of the stat grid. */
+.sell-tile { grid-column: 1 / -1; }
+.sell-tile input[type="number"] { padding: 2px 4px; }
+.sell-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 6px; margin-top: 6px; }
+.sell-opt { border: 1px solid var(--line); border-radius: 5px; padding: 5px 7px; font-variant-numeric: tabular-nums; display: grid; gap: 2px; }
+.sell-opt.best { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
 .cols2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 0 18px; align-items: start; }
 
 /* ---- Charts ---- */
@@ -923,6 +929,7 @@ section.condensed .target { padding: 3px 8px; }
 .pl-msg.warn .pl-msg-ic { background: var(--pill-warn-bg); color: var(--pill-warn); }
 .pl-msg.bad .pl-msg-ic { background: var(--pill-bad-bg); color: var(--pill-bad); }
 .pl-msg.info .pl-msg-ic { background: var(--pill-info-bg); color: var(--pill-info); }
+.pl-msg.money .pl-msg-ic { background: var(--pill-ok-bg); color: var(--pill-ok); }
 .pl-msg.bad { color: var(--pill-bad); }
 .pl-moves { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .pl-form { margin-top: 8px; padding: 10px; border: 1px dashed var(--control-line); border-radius: 8px; background: var(--bg-2); }
@@ -963,3 +970,43 @@ a.btn.primary:hover { background: var(--accent); }
 .war-actions { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; align-items: center; }
 .war-actions .claim-list { flex-basis: 100%; text-align: right; white-space: normal; margin-top: 1px; line-height: 1.35; }
 .war-table button.claimed { font-weight: 700; box-shadow: inset 0 0 0 1px var(--accent); }
+
+/* War report (warreport.js): the pop-up and the report card (also drawn as the Discord image) */
+#wr-modal { position: fixed; inset: 0; z-index: 50; background: var(--overlay); display: flex; align-items: flex-start; justify-content: center; padding: 40px 16px 16px; }
+#wr-modal[hidden] { display: none; }
+#wr-modal .modal-card { position: relative; width: min(1100px, 100%); max-height: calc(100vh - 56px); overflow-y: auto; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; box-shadow: 0 12px 40px var(--shadow); }
+#wr-modal .modal-close { position: sticky; top: 0; float: right; margin: -6px -8px 0 8px; font-size: 20px; line-height: 1; padding: 4px 10px; z-index: 1; }
+.wr-card { background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; }
+.wr-card.wr-image { border: none; }
+.wr-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.wr-title { font-size: 20px; font-weight: 700; color: var(--text); }
+.wr-result { font-size: 15px; font-weight: 700; padding: 4px 12px; border-radius: 999px; border: 2px solid currentColor; white-space: nowrap; }
+.wr-result.win { color: var(--pill-ok, var(--green)); }
+.wr-result.loss { color: var(--pill-warn, var(--orange)); }
+.wr-score { font-size: 30px; margin: 8px 0 6px; color: var(--text); font-variant-numeric: tabular-nums; }
+.wr-facts { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--muted); font-size: 13px; margin-bottom: 12px; }
+.wr-cols { margin-top: 14px; }
+.wr-tops { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 0 24px; }
+.wr-card h4 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.wr-top td { padding: 3px 6px; }
+.wr-acc { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 9px 20px; font-size: 13px; }
+.wr-emoji { display: inline-block; width: 1.5em; }
+.wr-acc > div > div { padding-left: 1.5em; }
+.wr-enemy { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 13px; }
+.wr-foot { margin-top: 10px; text-align: right; }
+.wr-text { white-space: pre-wrap; font-size: 12px; max-height: 300px; overflow: auto; background: var(--bg-2); padding: 8px; border-radius: 6px; }
+
+/* Restock alerts box (alerts.js restockAlerts): a disclosure that opens in place. */
+details.ra { margin: 6px 0; font-size: 12px; }
+details.ra > summary { cursor: pointer; display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border: 1px solid var(--control-line, var(--line)); border-radius: 4px; background: var(--bg-3); list-style: none; user-select: none; }
+details.ra > summary::-webkit-details-marker { display: none; }
+details.ra > summary::before { content: '\1F514'; font-size: 11px; }
+details.ra[open] > summary { border-color: var(--accent); }
+details.ra .ra-body { margin-top: 6px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg-2); max-width: 520px; display: grid; gap: 6px; }
+details.ra .ra-title { font-weight: 600; }
+details.ra .ra-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
+details.ra .ra-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+details.ra .ra-adds { display: flex; flex-wrap: wrap; gap: 4px; }
+details.ra .ra-adds button { font-size: 12px; }
+details.ra .note { margin: 0; }
+.abroad-stock td { vertical-align: top; }

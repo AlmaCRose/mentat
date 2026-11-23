@@ -102,7 +102,7 @@ function renderResearch() {
   const view = navView('research');
   const views = navSubnav('research', 'rs-view', 'margin:0');
   if (view === 'scout') {
-    const key = `scout|${navSig()}|${JSON.stringify(S.features.scout || null).length}|${(S.features.scout || {}).at || 0}|${prefs.get('scout.sort', 'position')}|${prefs.get('scout.dir', 1)}`;
+    const key = `scout|${navSig()}|${R && R.canPick === false ? 'member' : ''}|${JSON.stringify(S.features.scout || null).length}|${(S.features.scout || {}).at || 0}|${prefs.get('scout.sort', 'position')}|${prefs.get('scout.dir', 1)}`;
     if (key === rsLastKey && el.firstChild) return;
     rsLastKey = key;
     el.innerHTML = `<div class="toolbar">${views}</div>${irScoutView(S.features.scout)}`;
@@ -118,20 +118,29 @@ function renderResearch() {
   const ffs = S.features.ffscouter || {};
   const stats = ffs.stats || {};
   const mine = (S.features.war && S.features.war.myStats && S.features.war.myStats.total) || 0;
+  // A faction's name: its record, else the war/scouting lists (before its first check is in).
+  const scoutPool = (S.features.scout && S.features.scout.pool) || [];
+  const nameOf = t => (R.factions[t.id] && R.factions[t.id].name) || t.name || (scoutPool.find(f => f.id === t.id) || {}).name || `Faction ${t.id}`;
   const head = `<div class="toolbar">
       ${views}
-      ${targets.length > 1 ? `<div class="subnav" style="margin:0">${targets.map(t => `<button data-rs-sel="${t.id}" class="${sel && t.id === sel.id ? 'active' : ''}">${esc((R.factions[t.id] && R.factions[t.id].name) || t.name || t.id)}</button>`).join('')}</div>` : ''}
+      ${targets.length > 1 ? `<div class="subnav" style="margin:0">${targets.map(t => `<button data-rs-sel="${t.id}" class="${sel && t.id === sel.id ? 'active' : ''}">${esc(nameOf(t))}</button>`).join('')}</div>` : ''}
       <span class="spacer"></span>
       ${them && view === 'overview' ? `<button data-rs-export="image" title="Copy a one-card summary image to paste into Discord">Copy overview image</button>
       <button class="primary" data-rs-export="all" title="Save the full report (.html, opens in any browser), the overview image (.png) and the member table (.csv)">Export report…</button>` : ''}
       ${them && view === 'report' ? '<button class="primary" data-ir-export title="Save the report as a PDF, plus an interactive .html (sortable, filterable tables) and a .csv">Export PDF + HTML…</button>' : ''}
-      <form class="row" data-rs-form><input name="fid" type="number" min="1" placeholder="Faction ID" style="width:110px" value="${R.watchId || ''}"><button>Research faction</button>${R.watchId ? '<button type="button" data-rs-watch="0">Stop</button>' : ''}</form>
+      ${R.canPick === false ? '<span class="muted small" title="Each extra faction costs requests on the server\'s Torn API key, so only its owner picks them">Researched: your war opponent and the factions the server owner picks</span>'
+        : `<form class="row" data-rs-form><input name="fid" type="number" min="1" placeholder="Faction ID" style="width:110px" value="${R.watchId || ''}"><button>Research faction</button>${R.watchId ? '<button type="button" data-rs-watch="0">Stop</button>' : ''}</form>`}
     </div>`;
   const top = them ? factionBanner(them.basic && them.basic.bannerImage, 'fbanner-top') : '';
   if (view === 'report' && them) { renderReport(el, top + head, { R, sel, them, us, ffs, stats }); return; }
   rsLastKey = '';
+  if (!them && sel) {
+    // Picked (or a war just announced) but nothing collected yet: say so, not "no research running".
+    el.innerHTML = `${head}<div class="empty">Collecting ${esc(nameOf(sel))}… The first check of its members takes a moment, then its last 10 ranked war reports load over the next minute or two.${R.fromServer ? ` The server collects it; this device picks it up ${R.canPick === false ? 'within a couple of minutes' : 'within a few seconds'} of the first check.` : ''}</div>`;
+    return;
+  }
   if (!them) {
-    el.innerHTML = `${head}<div class="empty">No research running. It starts by itself as soon as your faction's next war is announced (it collects in the background until the war is over). You can also research any faction by ID above.</div>`;
+    el.innerHTML = `${head}<div class="empty">No research running. It starts by itself as soon as your faction's next war is announced (it collects in the background until the war is over). ${R.canPick === false ? 'The server owner can also pick other factions to research.' : 'You can also research any faction by ID above.'}</div>`;
     return;
   }
   const v = researchView({ R, sel, them, us, ffs, stats, mine, board: prefs.get('research.board', 'them'), sortKey: prefs.get('research.sort', 'stats'), dir: prefs.get('research.dir', -1) });

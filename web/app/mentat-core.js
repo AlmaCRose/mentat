@@ -1,4 +1,4 @@
-// Mentat 0.1.26: the core for web browsers. Built by scripts/pack-web.js from src/main; don't edit.
+// Mentat 0.1.28: the core for web browsers. Built by scripts/pack-web.js from src/main; don't edit.
 (function () {
 'use strict';
 // Browser stand-ins for the Node and Electron modules Mentat's core uses (bundled into
@@ -185,7 +185,7 @@ const DEFS = {
 //   dataDir               folder for the data files
 //   version, deviceName   for the server ("Mentat for Windows", "Mentat web")
 //   send(channel, data)   updates for the tools page(s)
-//   notify(title, body, url)
+//   notify(title, body, url, opts)   opts.urgent: middle-of-the-screen popup ({ sound, repeat })
 //   openUrl(url, newTab)  a Torn page or a link
 //   activity, archive     long-term stores for oppo research (the web app passes empty stand-ins)
 //   scoutLocal            this device may scout (Windows app: when turned on)
@@ -204,6 +204,7 @@ const { Store } = require('./store');
 const { PriceHistory } = require('./history');
 const { SyncFeature } = require('./sync');
 const { ClaimsFeature } = require('./features/claims');
+const { WarReportFeature, discordParts } = require('./features/warreport');
 const { UserFeature } = require('./features/user');
 const { ChainFeature } = require('./features/chain');
 const { TargetsFeature, herePlace } = require('./features/targets');
@@ -211,7 +212,7 @@ const { MarketFeature } = require('./features/market');
 const { TravelFeature } = require('./features/travel');
 const { BazaarFeature } = require('./features/bazaar');
 const { FFScouterFeature } = require('./features/ffscouter');
-const { AlertsFeature } = require('./features/alerts');
+const { AlertsFeature, SOUNDS } = require('./features/alerts');
 const { WarFeature } = require('./features/war');
 const { ResearchFeature } = require('./features/research');
 const { ScoutFeature } = require('./features/scout');
@@ -223,7 +224,18 @@ const { SETTABLE, OVERRIDE_PATH, TAB_LAYOUT_DEFAULTS, LIGHT_THEMES, num } = requ
 function createCore(host) {
   const { store, dataDir } = host;
   const send = (channel, data) => host.send(channel, data);
-  const notify = (title, body, url) => host.notify(title, body, url);
+  // kind: which notification this is ('trip', 'energy', 'chain', …; see ui.urgent in schema.js), or
+  // true / false when the caller decided itself (a planned item or custom alert with its own choice).
+  // Urgent ones go to the middle of the screen and stay until dismissed (popups.js / web host).
+  const urgentOpts = () => {
+    const s = SOUNDS[store.get('ui.urgentSound')] || SOUNDS.doorbell;
+    const vol = store.get('alerts.volume');
+    return { urgent: true, sound: s.count ? { ...s, volume: vol === undefined ? 0.6 : vol } : null, repeat: Number(store.get('ui.urgentRepeat')) || 0 };
+  };
+  const notify = (title, body, url, kind) => {
+    const urgent = kind === true || (typeof kind === 'string' && !!(store.get('ui.urgent') || {})[kind]);
+    return host.notify(title, body, url, urgent ? urgentOpts() : {});
+  };
 
   // ---- API + features ----
   const api = new TornApi(store);
@@ -265,16 +277,20 @@ function createCore(host) {
   // Data source: this device, or a Mentat server that collects 24/7 (see sync.js and server/).
   const sync = new SyncFeature({ store, research, travel, war, history, scout, version: host.version, onSettings: applySynced, defaultServer: host.defaultServer || '', api });
   research.remote = () => sync.covering();
+  research.ownerPicks = () => sync.ownerResearchPicks();
   // Abroad stock: this device stops polling YATA only once the server's copy has actually arrived,
   // so a device that can't get it (a failed download, say) still shows live stock.
   travel.remote = () => sync.covering() && sync.hasPulled('travel');
   scout.remote = () => sync.mode() === 'server' && sync.configured();
   user.on('flight', f => { travel.learnFlight(f); sync.markDirty(['travel.learned']); });
   if (host.migrated && host.migrated.length) sync.markDirty(host.migrated); // e.g. the new default theme, to your other devices
-  const alerts = new AlertsFeature({ store, notify, user, chain, targets, war });
+  const alerts = new AlertsFeature({ store, notify, user, chain, targets, war, travel });
+  travel.watchKeys = () => alerts.restockKeys(); // restock alerts: read YATA every 10 s
   // Casino tab: live odds come from the Mentat server (signed-in members).
   // War claims, shared through the Mentat server (War tab → Claim).
   const claims = new ClaimsFeature({ sync, war, viewing });
+  // Post-war report: facts + accolades for Discord (War tab → War report)
+  const warreport = new WarReportFeature({ api, war, dataDir });
   const casino = new CasinoFeature({ api, store, viewing, server: (method, p) => { if (!sync.configured()) throw new Error('Sign in to Mentat to load live odds.'); return sync.req(method, p); } });
   casino.on('imported', () => sync.markDirty(['gamble.log']));
   // Planner: your plan for the next few days (synced); reminders fire from here.
@@ -283,7 +299,7 @@ function createCore(host) {
   // Profile pictures: free from the profiles Targets fetches anyway, the rest a few a minute.
   const avatars = new AvatarsFeature({ api, store, dataDir });
   targets.on('profile', (id, d) => avatars.put(id, d && d.profile_image));
-  const features = { user, chain, research, scout, war, claims, targets, market, travel, bazaar, ffscouter, alerts, casino, planner, avatars, sync, ...(host.extraFeatures || {}) };
+  const features = { user, chain, research, scout, war, claims, warreport, targets, market, travel, bazaar, ffscouter, alerts, casino, planner, avatars, sync, ...(host.extraFeatures || {}) };
 
   // Settings changed on another device (from the Mentat server).
   function applySynced(changed) {
@@ -383,6 +399,13 @@ function createCore(host) {
     'war.refresh': () => war.refresh(),
     'war.watch': id => war.watch(id),
     'war.pin': (id, on) => war.pin(id, !!on),
+    'war.reportWars': () => warreport.listWars(),
+    'war.report': async (id, opts = {}) => {
+      const model = await warreport.build(id, { fresh: !!(opts && opts.fresh) });
+      return { model, parts: discordParts(model, { spectators: !!(opts && opts.spectators) }) };
+    },
+    // The report card as an image on the clipboard (desktop: export.js; the web app has none)
+    'war.reportImage': html => (host.copyImage ? host.copyImage(String(html || '')) : { unsupported: true }),
     'war.claim': (id, on) => claims.set(Number(id), !!on),
     'research.watch': id => research.research(id),
     'research.exportIntel': p => {
@@ -418,6 +441,7 @@ function createCore(host) {
     'alerts.test': id => alerts.test(String(id)),
     'alerts.preview': sound => alerts.preview(String(sound)),
     'popup.test': () => notify('Test alert', 'This is how your alerts will look.', 'https://www.torn.com/index.php'),
+    'popup.testUrgent': () => notify('Plan: Trip to Japan', 'Test of an urgent popup: in 5 min (14:05 TCT). Snooze or dismiss it.', 'https://www.torn.com/page.php?sid=travel', true),
     'market.catalog': () => market.catalogCompact(),
     'market.live': ids => market.requestLive((Array.isArray(ids) ? ids : [ids]).map(Number).filter(Boolean).slice(0, 25), 5),
     'market.watch.add': (id, below) => market.addWatch(Number(id), Number(below) || 0),
@@ -457,7 +481,7 @@ function createCore(host) {
 
   // Everything to disk (quitting, or the page going away).
   function flushAll() {
-    for (const s of [store, cache, history, travel, war, research, scout]) { try { s.flush(); } catch (e) { console.error(e); } }
+    for (const s of [store, cache, history, travel, war, research, scout, warreport]) { try { s.flush(); } catch (e) { console.error(e); } }
     try { if (activity) activity.flush(); if (archive) archive.flush(); } catch (e) { /* best effort */ }
     if (ffscouter.intelDb) ffscouter.intelDb.flush();
     sync.flush();
@@ -627,6 +651,15 @@ for (const t of TABS) {
 // Flight time overrides: travel.override.<country code>|<method> = minutes (0 removes it).
 const OVERRIDE_PATH = /^travel\.override\.(mex|cay|can|haw|uni|arg|swi|jap|chi|uae|sou)\|(Standard|Airstrip|Private|Business)$/;
 for (const k of Object.keys(DEFAULTS.user.notify)) SETTABLE[`user.notify.${k}`] = bool;
+// Urgent popups (notify.js / popups.js): a large card in the middle of the screen that stays until you
+// dismiss or snooze it and repeats its sound. Chosen per kind of notification (all off by default);
+// planned items and custom alerts can also choose for themselves. Synced.
+DEFAULTS.ui.urgent = { trip: false, plan: false, energy: false, nerve: false, drug: false, booster: false, medical: false, travel: false, hospital: false, events: false, messages: false, chain: false, targets: false, market: false };
+DEFAULTS.ui.urgentSound = 'doorbell';
+DEFAULTS.ui.urgentRepeat = 30; // seconds between repeats of the sound (0 = once); stops after 10 minutes
+for (const k of Object.keys(DEFAULTS.ui.urgent)) SETTABLE[`ui.urgent.${k}`] = bool;
+SETTABLE['ui.urgentSound'] = v => typeof v === 'string' && /^[a-z]{1,20}$/.test(v);
+SETTABLE['ui.urgentRepeat'] = v => [0, 10, 15, 30, 60, 120].includes(v);
 
 // One-time changes to saved settings. Returns the synced settings it changed (to send to the server).
 // 2026-11-18: the Mentat theme became the default; installs still on the old default (Torn Dark,
@@ -1436,7 +1469,7 @@ module.exports = { addReading, analyzeItem, fitCadence, nextRestocks, analyzeCou
 const SYNC_UNITS = [
   'ui.theme', 'ui.themeAuto', 'ui.themeDark', 'ui.themeLight', 'ui.accent', 'ui.clockZone', 'ui.clockThird', 'ui.clock24', 'ui.browserClocks',
   'ui.popupStyle', 'ui.popupSeconds', 'ui.popupCorner', 'ui.navLayout', 'ui.navCollapsed', 'ui.tabLayout', 'ui.nav', 'ui.condensed',
-  'ui.setupDone', 'ui.buttons',
+  'ui.setupDone', 'ui.buttons', 'ui.urgent', 'ui.urgentSound', 'ui.urgentRepeat',
   'user.interval', 'user.notify',
   'chain.enabled', 'chain.alerts', 'chain.desktop', 'chain.sound', 'chain.volume', 'chain.minChain',
   'chain.t150', 'chain.t90', 'chain.t60', 'chain.t30',
@@ -1649,6 +1682,9 @@ const COVER_GRACE = 10 * 60e3; // server unreachable this long -> collect here a
 const START_GRACE = 3 * 60e3;  // ...but not in the first minutes after launch
 // How often each data set may be downloaded (when the server says it changed).
 const PULL_EVERY = { research: 2 * 60e3, war: 60e3, travel: 2 * 60e3, prices: 30 * 60e3, bazaar: 30 * 60e3, scout: 5 * 60e3 };
+// After you pick a faction to research: check every 10 s (for up to 5 minutes) until its first data arrives.
+const RESEARCH_WAIT = 5 * 60e3;
+const RESEARCH_WAIT_POLL = 10e3;
 // Commands that change synced settings (settings.set is handled by path).
 const AFTER_COMMAND = {
   'targets.add': ['targets.list'], 'targets.addCurrent': ['targets.list'], 'targets.remove': ['targets.list'], 'targets.clear': ['targets.list'],
@@ -1942,7 +1978,7 @@ class SyncFeature extends EventEmitter {
       }
       for (const name of DATASETS) {
         if (!st.revs || !st.revs[name] || st.revs[name] === this.pulledRev[name]) continue;
-        if (this.pulledRev[name] && now - (this.pulledAt[name] || 0) < PULL_EVERY[name]) continue;
+        if (this.pulledRev[name] && now - (this.pulledAt[name] || 0) < PULL_EVERY[name] && !(name === 'research' && this.researchWaiting(now))) continue;
         if (!st.collect || st.collect[name] === false) continue;
         // One data set failing (a bad download, a merge error) must not stop the ones after it.
         try {
@@ -1955,7 +1991,7 @@ class SyncFeature extends EventEmitter {
         }
       }
       if (!wasCovering) { this.research.emit('state'); this.travel.emit('state'); }
-      this.nextPoll = Date.now() + STATUS_EVERY;
+      this.nextPoll = Date.now() + (this.researchWaiting() ? RESEARCH_WAIT_POLL : STATUS_EVERY);
     } catch (e) {
       this.error = e.message;
       if (this.upload && this.upload.running) { this.upload.running = false; this.upload.error = e.message; }
@@ -1999,6 +2035,25 @@ class SyncFeature extends EventEmitter {
   afterCommand(name, args) {
     if (name === 'settings.set') { const u = unitFor(args[0]); if (u) this.markDirty([u]); }
     else if (AFTER_COMMAND[name]) this.markDirty(AFTER_COMMAND[name]);
+    // A faction you just picked for research: check the server often until its first data is here.
+    if (name === 'research.watch' && Number(args[0]) > 0) this.researchWaitUntil = Date.now() + RESEARCH_WAIT;
+  }
+
+  // A member's device (signed in to someone else's server) gets the owner's research picks, since only
+  // those are collected. null on the owner's devices, before the first status check, or with no server.
+  ownerResearchPicks() {
+    if (this.mode() !== 'server' || this.kind() !== 'session' || !this.server) return null;
+    const acct = this.server.account;
+    if (!acct || !this.me || Number(this.me.id) === Number(acct.id)) return null; // the owner, signed in with their key
+    return (this.server.research && this.server.research.tracked) || [];
+  }
+
+  // True while a faction you picked has no data on this device yet (for a few minutes after the pick).
+  researchWaiting(now = Date.now()) {
+    if (!(now < (this.researchWaitUntil || 0))) return false;
+    const id = Number(this.store.get('research.watchId')) || 0;
+    const rec = id && this.research.rec(id);
+    return !!id && !(rec && rec.members && Object.keys(rec.members).length);
   }
 
   async syncSettings(st) {
@@ -2150,7 +2205,13 @@ module.exports = { PAGES };
 'use strict';
 // Custom timer alerts: "tell me N minutes (or seconds) before <timer>", each with its own
 // sound and optional desktop popup. Uses only timers the app already tracks (bars,
-// cooldowns, travel, hospital, chain, targets, daily reset), so no extra API requests.
+// cooldowns, travel, hospital, chain, targets, daily reset, abroad restocks), so no extra API
+// requests.
+//
+// Abroad restocks (rule.item = "<country code>:<item id>") come from the travel feature's YATA
+// readings and restock analysis (restock.js): 'restock' = the predicted next restock, 'restockleave'
+// = when to leave (Travel's flight method) to land just after it, and 'restocked' = an event, not a
+// timer: the item's stock went up between two readings.
 //
 // An alert fires when its moment passes while the app is running, and only for a timer
 // that was seen counting down before that moment: opening the app when a timer is already
@@ -2175,7 +2236,13 @@ const TIMERS = {
   enemy: { label: 'War enemy out of hospital', url: '', done: 'is out' },
   warstart: { label: 'Ranked war starts', url: T + 'factions.php?step=your#/war/rank', done: 'Ranked war has started' },
   reset: { label: 'Daily reset (00:00 TCT)', url: T + 'index.php', done: 'Daily reset' },
+  restock: { label: 'Abroad restock (predicted)', url: T + 'page.php?sid=travel', done: 'restock due', item: true },
+  restockleave: { label: 'Time to leave for an abroad restock', url: T + 'page.php?sid=travel', done: 'Time to leave', item: true },
+  restocked: { label: 'Abroad restock seen (stock went up)', url: T + 'page.php?sid=travel', done: 'restocked', item: true, event: true },
 };
+const ITEM_KEY = /^[a-z]{3}:\d{1,7}$/;
+const RESTOCK_FRESH_MS = 10 * 60 * 1000; // a reading older than this is too late to alert on
+const RESTOCK_GAP_MS = 15 * 60 * 1000;   // readings further apart than this: don't compare them
 
 // Sounds, played by the tool window (see beep() in app.js). The soft ones are pure tones
 // with natural fades, like a struck bell or a plucked string; the classic ones are the
@@ -2212,7 +2279,7 @@ const fmtLeft = sec => (sec >= 120 ? `${Math.round(sec / 60)} min` : `${Math.rou
 const tct = ms => new Date(ms).toISOString().slice(11, 16);
 
 class AlertsFeature extends EventEmitter {
-  constructor({ store, notify, user, chain, targets, war }) {
+  constructor({ store, notify, user, chain, targets, war, travel }) {
     super();
     this.store = store;
     this.notify = notify;
@@ -2220,9 +2287,15 @@ class AlertsFeature extends EventEmitter {
     this.chain = chain;
     this.targets = targets;
     this.war = war || null;
+    this.travel = travel || null;
     this.armed = new Map(); // "<rule>|<instance>" -> end time it was armed for
     this.lastEmit = 0;
+    this.stockSeen = new Map(); // "<country>:<item>" -> { at, q } (last reading, for 'restocked')
     for (const f of [user, chain, targets, war]) if (f) f.on('state', () => this.emitSoon());
+    if (travel) {
+      travel.on('readings', () => this.checkRestocks(Date.now()));
+      travel.on('state', () => { this.checkRestocks(Date.now()); this.emitSoon(); });
+    }
   }
 
   rules() {
@@ -2237,12 +2310,16 @@ class AlertsFeature extends EventEmitter {
   static clean(r) {
     const timer = TIMERS[r.timer] ? r.timer : null;
     if (!timer) throw new Error('Unknown timer');
-    const before = Math.max(0, Math.min(24 * 3600, Math.round(Number(r.before) || 0)));
+    const before = TIMERS[timer].event ? 0 : Math.max(0, Math.min(24 * 3600, Math.round(Number(r.before) || 0)));
+    const item = TIMERS[timer].item ? String(r.item || '') : '';
+    if (TIMERS[timer].item && !ITEM_KEY.test(item)) throw new Error('Pick an abroad item');
     return {
+      ...(item ? { item } : {}),
       timer,
       before,
       sound: SOUNDS[r.sound] ? r.sound : 'softchime',
       desktop: r.desktop !== false,
+      urgent: !!r.urgent, // an urgent popup in the middle of the screen (stays until dismissed)
       enabled: r.enabled !== false,
       target: timer === 'target' ? Math.max(0, Math.floor(Number(r.target) || 0)) : 0,
     };
@@ -2305,16 +2382,69 @@ class AlertsFeature extends EventEmitter {
     }
     const d = new Date(now);
     out.push({ timer: 'reset', inst: '', end: Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1) });
+    // Abroad restocks, for the items that have alerts.
+    const keys = new Set(this.rules().filter(r => r.timer === 'restock' || r.timer === 'restockleave').map(r => r.item));
+    for (const key of keys) {
+      const a = this.abroadItem(key);
+      const st = a && a.i.stats;
+      if (!st || !st.cadence) continue;
+      const name = `${a.i.name} in ${a.c.name}`;
+      const meta = { name, unc: st.cadence.uncertainty, conf: st.cadence.confidence };
+      // Kept for 90 s after it passes, so a "when it happens" alert sees its moment arrive.
+      const next = (st.next || []).find(t => t > now - 90000);
+      if (next) out.push({ timer: 'restock', inst: key, end: next, ...meta });
+      if (this.travel) {
+        const method = this.travel.method();
+        const fMin = this.travel.flightMinutes(a.c.code, method);
+        const delay = landingDelay(st);
+        const t = (st.next || []).find(x => x + delay - fMin * 60000 > now - 90000);
+        if (t && fMin) out.push({ timer: 'restockleave', inst: key, end: t + delay - fMin * 60000, restockAt: t, method, fMin, ...meta });
+      }
+    }
     return out;
+  }
+
+  // Abroad items that have an alert switched on (Travel reads YATA every 10 s while there are any).
+  restockKeys() {
+    return new Set(this.rules().filter(r => r.enabled && r.item && TIMERS[r.timer] && TIMERS[r.timer].item).map(r => r.item));
+  }
+
+  // An abroad item by "<country>:<item id>": { c, i } from the travel feature's latest readings.
+  abroadItem(key) {
+    if (!this.travel || !key) return null;
+    const [code, id] = String(key).split(':');
+    const c = (this.travel.state.countries || []).find(x => x.code === code);
+    const i = c && c.items.find(x => x.id === Number(id));
+    return i ? { c, i } : null;
+  }
+
+  // 'restocked' alerts: the item's stock went up from one reading to the next. Only fresh
+  // readings that follow on closely count (not data that arrives after the app was closed).
+  checkRestocks(now) {
+    const rules = this.rules().filter(r => r.enabled && r.timer === 'restocked');
+    const keys = new Set(rules.map(r => r.item));
+    for (const key of [...this.stockSeen.keys()]) if (!keys.has(key)) this.stockSeen.delete(key);
+    for (const key of keys) {
+      const a = this.abroadItem(key);
+      if (!a || !a.c.update) continue;
+      const prev = this.stockSeen.get(key);
+      const q = a.i.quantity;
+      if (prev && a.c.update <= prev.at) continue;
+      this.stockSeen.set(key, { at: a.c.update, q });
+      if (!prev || q <= prev.q || a.c.update - prev.at > RESTOCK_GAP_MS || now - a.c.update > RESTOCK_FRESH_MS) continue;
+      const inst = { timer: 'restocked', inst: key, end: a.c.update, name: `${a.i.name} in ${a.c.name}`, q, prevQ: prev.q };
+      for (const rule of rules) if (rule.item === key) this.fire(rule, inst, now);
+    }
   }
 
   matches(rule, inst) {
     if (rule.timer !== inst.timer) return false;
+    if (TIMERS[rule.timer].item) return rule.item === inst.inst;
     return rule.timer !== 'target' || !rule.target || String(rule.target) === inst.inst;
   }
 
   tick(now) {
-    const rules = this.rules().filter(r => r.enabled);
+    const rules = this.rules().filter(r => r.enabled && !TIMERS[r.timer].event);
     if (!rules.length) return;
     const insts = this.instances(now);
     for (const rule of rules) {
@@ -2363,6 +2493,15 @@ class AlertsFeature extends EventEmitter {
     } else if (rule.timer === 'warstart') {
       title = ended ? `Ranked war started ${inst.name}` : `Ranked war ${inst.name} starts in ${fmtLeft(left)}`;
       body = `${ended ? 'Started' : 'Starts'} at ${tct(inst.end)} TCT.`;
+    } else if (rule.timer === 'restock') {
+      title = ended ? `${inst.name}: restock due now` : `${inst.name} restocks in ${fmtLeft(left)}`;
+      body = `Predicted ~${tct(inst.end)} TCT${inst.unc ? ` ±${Math.ceil(inst.unc / 60000)} min` : ''}${inst.conf ? ` (${inst.conf} confidence)` : ''}.`;
+    } else if (rule.timer === 'restockleave') {
+      title = ended ? `Leave now for ${inst.name}` : `Leave for ${inst.name} in ${fmtLeft(left)}`;
+      body = `Leave ${tct(inst.end)} TCT${inst.fMin ? ` (${inst.method === 'Private' ? 'WLT' : inst.method || ''}, ${Math.round(inst.fMin)} min)` : ''} to land just after the ~${tct(inst.restockAt || inst.end)} restock.`;
+    } else if (rule.timer === 'restocked') {
+      title = `${inst.name} restocked`;
+      body = inst.q !== undefined ? `${inst.q} in stock (was ${inst.prevQ}) at the ${tct(inst.end)} TCT reading.` : 'Its stock just went up.';
     } else if (rule.timer === 'chain') {
       title = ended ? 'Chain timer ran out' : `Chain timer: ${fmtLeft(left)} left`;
       body = `${inst.name || 'Chain'}. Hit someone to keep it going.`;
@@ -2379,7 +2518,7 @@ class AlertsFeature extends EventEmitter {
     const vol = this.store.get('alerts.volume');
     const s = SOUNDS[rule.sound] || SOUNDS.softchime;
     if (s.count) this.emit('beep', { ...s, volume: vol === undefined ? 0.6 : vol });
-    if (rule.desktop) this.notify(m.title, m.body, m.url);
+    if (rule.desktop || rule.urgent) this.notify(m.title, m.body, m.url, !!rule.urgent);
     const log = [{ at: now, title: m.title, rule: rule.id }, ...(this.recent || [])].slice(0, 20);
     this.recent = log;
     this.emitSoon(true);
@@ -2389,8 +2528,9 @@ class AlertsFeature extends EventEmitter {
   test(id) {
     const rule = this.rules().find(r => r.id === id);
     if (!rule) return;
+    const ab = TIMERS[rule.timer].item ? this.abroadItem(rule.item) : null;
     const inst = this.instances(Date.now()).find(i => this.matches(rule, i))
-      || { timer: rule.timer, inst: String(rule.target || ''), end: Date.now() + rule.before * 1000, name: rule.timer === 'target' ? 'Target' : rule.timer === 'enemy' ? 'Enemy' : '' };
+      || { timer: rule.timer, inst: String(rule.item || rule.target || ''), end: Date.now() + rule.before * 1000, name: ab ? `${ab.i.name} in ${ab.c.name}` : rule.timer === 'target' ? 'Target' : rule.timer === 'enemy' ? 'Enemy' : '' };
     this.fire(rule, inst);
   }
 
@@ -2428,8 +2568,25 @@ class AlertsFeature extends EventEmitter {
       timers: Object.fromEntries(Object.entries(TIMERS).map(([k, v]) => [k, v.label])),
       sounds: Object.fromEntries(Object.entries(SOUNDS).map(([k, v]) => [k, v.label])),
       targets: Object.values(this.targets.list()).map(t => ({ id: t.id, name: t.name || `#${t.id}` })),
+      itemTimers: Object.keys(TIMERS).filter(k => TIMERS[k].item),
+      // Abroad items to pick from, and names for the items alerts already use.
+      abroad: this.abroadList(),
     };
   }
+
+  abroadList() {
+    const out = [];
+    for (const c of (this.travel && this.travel.state.countries) || []) for (const i of c.items) if (i.cost) out.push({ key: `${c.code}:${i.id}`, name: i.name, country: c.name });
+    return out.sort((a, b) => a.name.localeCompare(b.name) || a.country.localeCompare(b.country));
+  }
+}
+
+// How long after a predicted restock to land, so it has happened (same as the page's travel.js).
+function landingDelay(st) {
+  const cad = st.cadence;
+  let d = (cad ? cad.uncertainty : 2 * 60000) + 60000;
+  if (st.stay) d = Math.min(d, st.stay * 0.4);
+  return Math.max(30000, d);
 }
 
 module.exports = { AlertsFeature, TIMERS, SOUNDS, fmtBefore };
@@ -3119,7 +3276,7 @@ class ChainFeature extends EventEmitter {
       if (!s[`t${a.sec}`]) continue;
       if (prev > a.sec && rem <= a.sec && rem > a.sec - ALERT_WINDOW_SEC) {
         this.emit('beep', { ...a, volume: s.volume });
-        if (s.desktop) this.notify(`Chain timer ${fmt(a.sec)}`, `Chain at ${c.current} hits. Hit someone to keep it going.`);
+        if (s.desktop) this.notify(`Chain timer ${fmt(a.sec)}`, `Chain at ${c.current} hits. Hit someone to keep it going.`, '', 'chain');
       }
     }
   }
@@ -3709,7 +3866,7 @@ class MarketFeature extends EventEmitter {
     this.store.set('market.watch', all);
     const it = this.item(id);
     const name = it ? it[0] : `Item ${id}`;
-    this.notify(`${name}: $${price.toLocaleString('en-US')} in ${where}`, `At or below your $${w.below.toLocaleString('en-US')} target.`, marketUrl(id));
+    this.notify(`${name}: $${price.toLocaleString('en-US')} in ${where}`, `At or below your $${w.below.toLocaleString('en-US')} target.`, marketUrl(id), 'market');
   }
 
   checkAllWatches() {
@@ -3857,12 +4014,16 @@ class PlannerFeature extends EventEmitter {
     const at = Number(r.at);
     if (!Number.isFinite(at) || at < now - 30 * 86400e3 || at > now + 400 * 86400e3) throw new Error('Pick a time within the plan');
     const it = { type: r.type, at: Math.round(at / 1000) * 1000, note: str(r.note, 300), remind: int(r.remind, -1, 1440, -1), done: !!r.done };
+    // Reminder style: '' = the Settings choice for this kind, 'on' = urgent popup, 'off' = normal.
+    if (r.urgent === 'on' || r.urgent === 'off') it.urgent = r.urgent;
     if (r.type === 'trip') {
       if (!CODES.has(r.country)) throw new Error('Pick a country');
       it.country = r.country;
       it.method = METHODS.includes(r.method) ? r.method : '';
       it.itemId = int(r.itemId, 0, 1e6, 0);
       it.stay = int(r.stay, 0, 24 * 60, 0);
+      // Money to bring (worked out on the page from abroad shop prices + the ticket), for the reminder.
+      if (r.bring && typeof r.bring === 'object' && Number(r.bring.total) > 0) it.bring = { total: int(r.bring.total, 0, 1e13, 0), text: str(r.bring.text, 120) };
     } else if (r.type === 'gym' || r.type === 'crimes') {
       it.amount = int(r.amount, 0, 100000, 0); // 0 = all you have
     } else if (r.type === 'energy' || r.type === 'nerve') {
@@ -3961,7 +4122,10 @@ class PlannerFeature extends EventEmitter {
       firedChanged = true;
       if (now - at > MAX_LATE) continue;
       const when = it.remind ? `in ${it.remind} min (${new Date(it.at).toISOString().slice(11, 16)} TCT)` : 'now';
-      this.notify(`Plan: ${this.title(it)}`, `${when}${it.note && it.type !== 'note' ? ` · ${it.note}` : ''}`, this.url(it));
+      // Urgent popup: the item's own choice, else the setting for trips / other plan items.
+      const kind = it.urgent === 'on' ? true : it.urgent === 'off' ? false : it.type === 'trip' ? 'trip' : 'plan';
+      const bring = it.type === 'trip' && it.bring && it.bring.total ? ` · bring $${it.bring.total.toLocaleString('en-US')}${it.bring.text ? ` (${it.bring.text})` : ''}` : '';
+      this.notify(`Plan: ${this.title(it)}`, `${when}${bring}${it.note && it.type !== 'note' ? ` · ${it.note}` : ''}`, this.url(it), kind);
     }
     // Once an hour: forget old reminders and drop items more than a week in the past.
     if (now - this.lastPrune > 3600e3) {
@@ -4067,6 +4231,9 @@ class ResearchFeature extends EventEmitter {
     this.lastEmit = 0;
     // True while a sync server collects instead of this PC (set by main.js).
     this.remote = () => false;
+    // On a member's device (signed in to someone else's server): the factions the server owner picked
+    // (only the owner's pick is researched). null on your own server or without one (set by core.js).
+    this.ownerPicks = () => null;
     // Share the War tab's member checks instead of fetching again.
     war.on('members', (fid, members, now) => { if (this.tracked().some(t => t.id === fid)) this.recordMembers(fid, members, now); });
   }
@@ -4096,13 +4263,15 @@ class ResearchFeature extends EventEmitter {
     const out = [];
     const w = this.war.snapshot();
     const now = Date.now();
-    const manual = Number(this.store.get('research.watchId')) || 0;
+    const picks = this.remote() ? this.ownerPicks() : null;
+    const manual = picks ? 0 : Number(this.store.get('research.watchId')) || 0;
     if (manual) out.push({ id: manual, why: 'picked by you' });
+    if (picks) for (const p of picks) if (p.why === 'picked by you' && p.id) out.push({ id: p.id, name: p.name || '', why: 'picked by the server owner' });
     const r = w.wars && w.wars.ranked;
     const own = w.own && w.own.id;
     if (r && own && (!r.end || now - r.end < KEEP_AFTER_WAR)) {
       const them = r.factions.find(f => f.id !== own);
-      if (them && them.id !== manual) out.push({ id: them.id, name: them.name, why: r.start > now ? 'announced ranked war' : r.end ? 'recent ranked war' : 'ranked war' });
+      if (them && !out.some(o => o.id === them.id)) out.push({ id: them.id, name: them.name, why: r.start > now ? 'announced ranked war' : r.end ? 'recent ranked war' : 'ranked war' });
     }
     if (w.wars && own) {
       for (const x of [...w.wars.raids, ...w.wars.territory]) {
@@ -4470,7 +4639,7 @@ class ResearchFeature extends EventEmitter {
     const queue = tracked.reduce((n, t) => { const r = this.rec(t.id); return n + (r ? Object.keys(r.members).filter(id => Date.now() - (r.personalAt[id] || 0) >= PERSONAL_EVERY).length : 0); }, 0);
     const snapQueue = tracked.reduce((n, t) => n + this.snapQueue(this.rec(t.id)), 0);
     return {
-      fromServer: this.remote(), tracked, factions: recs, watchId: Number(this.store.get('research.watchId')) || 0, personalQueue: queue, personalGapSec: PERSONAL_GAP / 1000,
+      fromServer: this.remote(), canPick: !(this.remote() && this.ownerPicks()), tracked, factions: recs, watchId: Number(this.store.get('research.watchId')) || 0, personalQueue: queue, personalGapSec: PERSONAL_GAP / 1000,
       snapStats: SNAP_STATS, snapQueue, snapGapSec: SNAP_GAP / 1000, snapWeeks: SNAP_WEEKS,
     };
   }
@@ -5055,7 +5224,7 @@ class TargetsFeature extends EventEmitter {
       const prev = this.edges[t.id];
       this.edges[t.id] = free;
       if (prev === false && free) {
-        if (s.notify) this.notify(`${t.name || '#' + t.id} is out`, st.state === 'Okay' ? 'Status: Okay' : `${st.state} timer ended`, `https://www.torn.com/profiles.php?XID=${t.id}`);
+        if (s.notify) this.notify(`${t.name || '#' + t.id} is out`, st.state === 'Okay' ? 'Status: Okay' : `${st.state} timer ended`, `https://www.torn.com/profiles.php?XID=${t.id}`, 'targets');
         if (s.autoRefresh && st.state !== 'Okay') this.update(t.id, x => { x.force = true; });
       }
     }
@@ -5142,6 +5311,12 @@ const { addReading, analyzeCountry } = require('../restock');
 
 const YATA_URL = 'https://yata.yt/api/v1/travel/export/';
 const YATA_EVERY = 2 * 60 * 1000;
+// While you have a restock alert on, this device reads YATA every 10 s itself (also when a sync
+// server collects stock), so restocks of the items you watch show up within seconds. YATA's own
+// data comes from players in each country and is usually under a minute old. After an error
+// (e.g. YATA's rate limit) it waits the normal 2 minutes before trying again.
+const YATA_FAST = 10 * 1000;
+const YATA_BACKOFF = 2 * 60 * 1000;
 const YATA_MIN_MANUAL = 30 * 1000;
 const HISTORY_KEEP = 4 * 86400 * 1000;
 const CAPACITY_EVERY = 6 * 3600 * 1000;
@@ -5173,6 +5348,11 @@ class TravelFeature extends EventEmitter {
     this.capacity = capacity; // the sync server has no use for your carry capacity
     // True while a sync server polls YATA instead of this PC (set by main.js).
     this.remote = () => false;
+    // Abroad items with restock alerts ("<code>:<id>"), set by core.js; any = poll YATA fast.
+    this.watchKeys = () => null;
+    this.yataErrorAt = 0;
+    this.lastStateEmit = 0;
+    this.lastStocks = null; // the last YATA export this device read (re-applied over a server copy)
     this.api = api;
     this.store = store;
     this.history = new Store(path.join(dataDir, 'travel-history.json'), { countries: {} }, { debounceMs: 120000 });
@@ -5199,9 +5379,17 @@ class TravelFeature extends EventEmitter {
     if (Date.now() - this.lastYata >= YATA_MIN_MANUAL) this.lastYata = 0;
   }
 
+  // Restock alerts want fast readings: the watched items, or null.
+  fastKeys() {
+    const k = this.watchKeys();
+    return k && k.size && this.store.get('travel.yata') ? k : null;
+  }
+
   async fetchYata(now) {
     this.yataInFlight = true;
     this.lastYata = now;
+    const watched = this.fastKeys();
+    const before = watched ? this.quantities(watched) : '';
     try {
       const res = await fetch(YATA_URL, { signal: AbortSignal.timeout(20000), headers: { Accept: 'application/json', 'User-Agent': 'Mentat' } });
       if (res.status === 429) throw new Error('YATA rate limit reached');
@@ -5209,16 +5397,38 @@ class TravelFeature extends EventEmitter {
       const d = await res.json();
       if (!d || !d.stocks) throw new Error('Unexpected YATA response');
       this.record(d.stocks);
+      this.lastStocks = d.stocks;
       this.state.error = '';
       this.state.fetchedAt = Date.now();
       this.state.yataTimestamp = (d.timestamp || 0) * 1000;
     } catch (e) {
+      this.yataErrorAt = Date.now();
       this.state.error = e.name === 'TimeoutError' ? 'YATA timed out' : e.message || 'Could not reach YATA';
     } finally {
       this.yataInFlight = false;
       this.rebuild(Date.now());
-      this.emit('state');
+      this.state.fast = !!watched;
+      // Restock alerts look at every reading; the page is redrawn only when a watched item changed
+      // (or every 2 minutes as before), so a fast poll doesn't redraw Travel every 10 s.
+      this.emit('readings');
+      const t = Date.now();
+      if (!watched || this.quantities(watched) !== before || this.state.error || t - this.lastStateEmit >= YATA_EVERY) {
+        this.lastStateEmit = t;
+        this.emit('state');
+      }
     }
+  }
+
+  // The watched items' latest quantities, as one comparable string.
+  quantities(keys) {
+    const out = [];
+    for (const key of keys) {
+      const [code, id] = key.split(':');
+      const c = this.state.countries.find(x => x.code === code);
+      const i = c && c.items.find(x => x.id === Number(id));
+      out.push(`${key}=${i ? i.quantity : '-'}`);
+    }
+    return out.join(',');
   }
 
   record(stocks) {
@@ -5229,8 +5439,9 @@ class TravelFeature extends EventEmitter {
       if (!s || !Array.isArray(s.stocks)) continue;
       const h = hc[c.code] || (hc[c.code] = { update: 0, items: {}, meta: {} });
       const t = (s.update || 0) * 1000;
+      if (t < h.update) continue; // older than what's here (e.g. a server copy that arrived since)
       h.latest = s.stocks.map(i => ({ id: i.id, name: i.name, quantity: i.quantity, cost: i.cost }));
-      if (t <= h.update) continue; // no new reading for this country
+      if (t === h.update) continue; // no new reading for this country
       h.update = t;
       if (!h.since) h.since = t;
       for (const i of s.stocks) {
@@ -5265,6 +5476,8 @@ class TravelFeature extends EventEmitter {
   // The sync server's stock history replaces this PC's copy (it polls YATA 24/7).
   applyRemote(data, meta = {}) {
     this.history.data = { countries: (data && data.countries) || {} };
+    // Fresher readings this device took itself (fast polling for restock alerts) stay on top.
+    if (this.lastStocks && this.fastKeys()) this.record(this.lastStocks);
     this.history.save();
     if (meta.fetchedAt) this.state.fetchedAt = meta.fetchedAt;
     if (meta.yataTimestamp) this.state.yataTimestamp = meta.yataTimestamp;
@@ -5283,6 +5496,24 @@ class TravelFeature extends EventEmitter {
       if (r[2] !== undefined && r[2] !== r[0]) pts.push([r[2], r[1]]);
     }
     return pts;
+  }
+
+  // The flight method Travel uses (auto = your last flight's) and one-way minutes for it: your
+  // override, else your measured flight, else the wiki table (−25% with the travel book). Same rules
+  // as the page's travelModel; used by restock alerts ("time to leave").
+  method() {
+    const m = this.store.get('travel.method');
+    return METHODS.includes(m) ? m : this.store.get('travel.lastMethod') || 'Standard';
+  }
+
+  flightMinutes(code, method = this.method()) {
+    const key = `${code}|${method}`;
+    const o = this.store.get('travel.override') || {};
+    if (o[key]) return o[key];
+    const l = this.store.get('travel.learned') || {};
+    if (l[key]) return l[key];
+    const c = COUNTRIES.find(x => x.code === code);
+    return c ? c.times[Math.max(0, METHODS.indexOf(method))] * (this.store.get('travel.book') ? 0.75 : 1) : 0;
   }
 
   // ---- Capacity ----
@@ -5307,7 +5538,8 @@ class TravelFeature extends EventEmitter {
   }
 
   tick(now) {
-    if (!this.remote() && this.store.get('travel.yata') && !this.yataInFlight && now - this.lastYata >= YATA_EVERY) this.fetchYata(now);
+    const fast = !!this.fastKeys() && now - this.yataErrorAt >= YATA_BACKOFF;
+    if ((fast || !this.remote()) && this.store.get('travel.yata') && !this.yataInFlight && now - this.lastYata >= (fast ? YATA_FAST : YATA_EVERY)) this.fetchYata(now);
     const cap = this.store.get('travel.capacityApi');
     if (this.capacity && this.api.hasKey() && !this.capInFlight && (!cap || now - cap.fetchedAt > CAPACITY_EVERY) && now - this.lastCapacityTry > 10 * 60 * 1000) this.fetchCapacity(now);
   }
@@ -5461,8 +5693,8 @@ class UserFeature extends EventEmitter {
     const pn = prev && prev.notifications;
     const nn = this.state.data.notifications;
     if (pn && nn) {
-      if (on.events && nn.events > pn.events) this.notify('Torn: new events', `${nn.events} unread event${nn.events === 1 ? '' : 's'}`, 'https://www.torn.com/events.php');
-      if (on.messages && nn.messages > pn.messages) this.notify('Torn: new messages', `${nn.messages} unread message${nn.messages === 1 ? '' : 's'}`, 'https://www.torn.com/messages.php');
+      if (on.events && nn.events > pn.events) this.notify('Torn: new events', `${nn.events} unread event${nn.events === 1 ? '' : 's'}`, 'https://www.torn.com/events.php', 'events');
+      if (on.messages && nn.messages > pn.messages) this.notify('Torn: new messages', `${nn.messages} unread message${nn.messages === 1 ? '' : 's'}`, 'https://www.torn.com/messages.php', 'messages');
     }
     this.checkAlerts(Date.now());
     this.emit('state');
@@ -5486,7 +5718,7 @@ class UserFeature extends EventEmitter {
     const d = this.state.data;
     if (!d) return;
     const on = this.store.get('user.notify') || {};
-    const ping = (flag, title, body, url) => () => on[flag] && this.notify(title, body, url);
+    const ping = (flag, title, body, url) => () => on[flag] && this.notify(title, body, url, flag);
 
     if (d.bars) {
       const fullAt = b => (!b || b.current >= b.maximum ? 0 : b.fullAt);
@@ -5578,6 +5810,8 @@ function member(m) {
     position: m.position || '',
     days: m.days_in_faction || 0,
     revivable: !!m.is_revivable,
+    reviveSetting: m.revive_setting && m.revive_setting !== 'Unknown' ? m.revive_setting : '', // own faction, with permissions
+    earlyDischarge: !!m.has_early_discharge,
     onWall: !!m.is_on_wall,
     state: st.state || '',
     description: st.description || '',
@@ -5988,6 +6222,333 @@ class WarFeature extends EventEmitter {
 module.exports = { WarFeature, counts, member };
 
   },
+  "features/warreport.js": function (module, exports, require) {
+'use strict';
+// Post-war report (the user's request, 2026-11-21): the facts of a finished ranked war plus fun
+// accolades, as Discord-ready text (and an image, drawn by the War tab). Sources, all official:
+//   /v2/faction/{warId}/rankedwarreport  result, score, hits, rank, rewards, every member (public key)
+//   /v2/faction/chains + /v2/faction/{chainId}/chainreport  your chains during the war (public):
+//        each attacker's respect (best single hit), mugs, hospitalisations, assists, retaliations,
+//        overseas hits, draws, escapes, losses, chain bonus hits
+//   /v2/faction/attacks?from&to  every attack in the war. Needs a key with faction API access;
+//        without it those accolades are left out and the report says so.
+//   Mentat's own score history for the war (lead changes, biggest lead, comebacks).
+// Accolades only go to someone who did the thing (a count above zero). Built reports are kept
+// (war-reports.json), so opening one again costs nothing.
+
+const { EventEmitter } = require('events');
+const { Store } = require('../store');
+
+const PRIORITY = 7;
+const MAX_ATTACK_PAGES = 80; // 8,000 attacks
+const SUCCESS = new Set(['Attacked', 'Mugged', 'Hospitalized', 'Arrested', 'Looted', 'Special', 'Bounty']);
+const DISCORD_LIMIT = 1900; // Discord's message limit is 2,000 characters; keep some room
+
+const num = n => Math.round(Number(n) || 0).toLocaleString('en-US');
+const pts = n => (Math.round((Number(n) || 0) * 100) / 100).toLocaleString('en-US', { maximumFractionDigits: 2 });
+const s2ms = s => (s ? Number(s) * 1000 : 0);
+function dur(ms) {
+  const m = Math.round(ms / 60000);
+  const d = Math.floor(m / 1440), h = Math.floor((m % 1440) / 60), mm = m % 60;
+  return d ? `${d}d ${h}h ${mm}m` : h ? `${h}h ${mm}m` : `${mm}m`;
+}
+const tct = ms => new Date(ms).toISOString().slice(11, 16);
+
+// ---- The report, from data already fetched ----
+// report: the API's rankedwarreport. chains: chainreport objects (API shape) during the war.
+// attacks: the war's attacks (API shape), or null when the key can't read them. history:
+// Mentat's { warId, points: [[t, ours, theirs, target]] } for this war, if any.
+function buildModel({ report, ownId, chains = [], attacks = null, history = null, builtAt = Date.now() }) {
+  const r = report;
+  const facs = r.factions || [];
+  const usF = facs.find(f => f.id === ownId) || facs[0];
+  const themF = facs.find(f => f !== usF) || {};
+  const side = f => ({
+    id: f.id, name: f.name || `Faction ${f.id}`, score: f.score || 0, attacks: f.attacks || 0,
+    rankBefore: (f.rank && f.rank.before) || '', rankAfter: (f.rank && f.rank.after) || '',
+    respect: (f.rewards && f.rewards.respect) || 0, points: (f.rewards && f.rewards.points) || 0,
+    items: ((f.rewards && f.rewards.items) || []).map(i => ({ name: i.name, quantity: i.quantity || 1 })),
+    members: (f.members || []).map(m => ({ id: m.id, name: m.name || `#${m.id}`, level: m.level || 0, attacks: m.attacks || 0, score: Number(m.score) || 0 })),
+  });
+  const us = side(usF), them = side(themF);
+  const names = new Map([...us.members, ...them.members].map(m => [m.id, m.name]));
+  const nameOf = id => names.get(id) || `#${id}`;
+  const start = s2ms(r.start), end = s2ms(r.end);
+  const accolades = [];
+  // Winners of one accolade: everyone tied for the best value (at most 3).
+  const award = (key, emoji, title, blurb, rows, value, text, { min = 0, low = false } = {}) => {
+    const scored = rows.map(x => ({ x, v: value(x) })).filter(o => Number.isFinite(o.v) && (low ? true : o.v > min));
+    if (!scored.length) return;
+    const best = low ? Math.min(...scored.map(o => o.v)) : Math.max(...scored.map(o => o.v));
+    const winners = scored.filter(o => o.v === best).slice(0, 3).map(o => ({ id: o.x.id, name: o.x.name || nameOf(o.x.id), value: o.v, text: text(o.x, o.v) }));
+    accolades.push({ key, emoji, title, blurb, winners });
+  };
+
+  // From the war report (always there)
+  const hitters = us.members.filter(m => m.attacks > 0);
+  award('mvp', '🏆', 'MVP', 'most war score', us.members, m => m.score, (m, v) => `${pts(v)} pts`);
+  award('workhorse', '🔨', 'Workhorse', 'most war hits', us.members, m => m.attacks, (m, v) => `${num(v)} hits`);
+  award('sharpshooter', '🎯', 'Sharpshooter', 'best score per hit (5+ hits)', us.members.filter(m => m.attacks >= 5), m => Math.round(m.score / m.attacks * 100) / 100, (m, v) => `${pts(v)} pts a hit`);
+  const levels = hitters.map(m => m.level).sort((a, b) => a - b);
+  const medianLevel = levels.length ? levels[Math.floor(levels.length / 2)] : 0;
+  award('mighty', '🐜', 'Small but Mighty', 'lowest level to put up a top-10 score',
+    [...hitters].sort((a, b) => b.score - a.score).slice(0, 10).filter(m => m.level < medianLevel), m => m.level, (m, v) => `level ${v}, ${pts(m.score)} pts`, { low: true });
+
+  // From your chains during the war
+  const agg = new Map(); // id -> summed counts
+  let longest = null, bonusList = [];
+  for (const c of chains) {
+    const d = c.details || {};
+    if (!longest || (d.chain || 0) > longest.chain) longest = { id: c.id, chain: d.chain || 0, respect: d.respect || 0, start: s2ms(c.start), end: s2ms(c.end) };
+    for (const b of c.bonuses || []) bonusList.push({ id: b.attacker_id, chain: b.chain, respect: b.respect });
+    for (const a of c.attackers || []) {
+      const t = a.attacks || {}, rs = a.respect || {};
+      const o = agg.get(a.id) || { id: a.id, best: 0, mug: 0, hospitalize: 0, assists: 0, retaliations: 0, overseas: 0, draws: 0, escapes: 0, losses: 0, bonuses: 0, total: 0 };
+      o.best = Math.max(o.best, rs.best || 0);
+      for (const k of ['mug', 'hospitalize', 'assists', 'retaliations', 'overseas', 'draws', 'escapes', 'losses', 'bonuses', 'total']) o[k] += t[k] || 0;
+      agg.set(a.id, o);
+    }
+  }
+  const chainRows = [...agg.values()]; // names come from the war report (nameOf)
+  award('heavy', '💥', 'Heavy Hitter', 'biggest single hit (respect)', chainRows, o => Math.round(o.best * 100) / 100, (o, v) => `${pts(v)} respect in one hit`);
+  const bigBonus = bonusList.sort((a, b) => b.respect - a.respect)[0];
+  award('bonus', '🎁', 'Bonus Hunter', 'most chain bonus hits', chainRows, o => o.bonuses, (o, v) => `${v} bonus hit${v === 1 ? '' : 's'}${bigBonus && bigBonus.id === o.id ? ` (incl. hit #${num(bigBonus.chain)} for ${num(bigBonus.respect)} respect)` : ''}`);
+  award('pickpocket', '💰', 'Pickpocket', 'most mugs', chainRows, o => o.mug, (o, v) => `${v} mug${v === 1 ? '' : 's'}`);
+  award('hospital', '🏥', 'Hospital Director', 'most hospitalisations', chainRows, o => o.hospitalize, (o, v) => `${v} sent to hospital`);
+  award('assists', '🤝', 'Team Player', 'most assists', chainRows, o => o.assists, (o, v) => `${v} assist${v === 1 ? '' : 's'}`);
+  award('payback', '😤', 'Payback', 'most retaliations', chainRows, o => o.retaliations, (o, v) => `${v} retal${v === 1 ? '' : 's'}`);
+  award('globetrotter', '✈️', 'Globetrotter', 'most overseas hits', chainRows, o => o.overseas, (o, v) => `${v} hit${v === 1 ? '' : 's'} abroad`);
+  award('peacemaker', '🕊️', 'Peacemaker', 'most draws', chainRows, o => o.draws, (o, v) => `${v} stalemate${v === 1 ? '' : 's'}`);
+  award('character', '🩹', 'Character Building', 'most losses (it builds character)', chainRows, o => o.losses, (o, v) => `${v} L${v === 1 ? '' : 's'}`);
+
+  // From the attack log (faction API access)
+  let attackStats = null;
+  if (Array.isArray(attacks)) {
+    const fid = a => (a && a.faction && a.faction.id) || 0;
+    const war = attacks.filter(a => a.is_ranked_war);
+    const out = war.filter(a => fid(a.attacker) === us.id);
+    const inc = war.filter(a => fid(a.defender) === us.id && fid(a.attacker) !== us.id);
+    const won = out.filter(a => SUCCESS.has(a.result)).sort((a, b) => a.started - b.started);
+    const byAttacker = new Map();
+    for (const a of won) { const l = byAttacker.get(a.attacker.id) || []; l.push(a); byAttacker.set(a.attacker.id, l); }
+    const people = [...byAttacker.entries()].map(([id, list]) => ({ id, name: list[0].attacker.name, list }));
+    if (won.length) {
+      const f = won[0], l = won[won.length - 1];
+      accolades.push({ key: 'first', emoji: '🩸', title: 'First Blood', blurb: 'first war hit', winners: [{ id: f.attacker.id, name: f.attacker.name, value: f.started, text: `on ${f.defender.name} at ${tct(s2ms(f.started))} TCT` }] });
+      accolades.push({ key: 'closer', emoji: '🔚', title: 'The Closer', blurb: 'last war hit', winners: [{ id: l.attacker.id, name: l.attacker.name, value: l.started, text: `on ${l.defender.name} at ${tct(s2ms(l.started))} TCT` }] });
+    }
+    award('owl', '🦉', 'Night Owl', 'most war hits 00:00–06:00 TCT', people, p => p.list.filter(a => new Date(s2ms(a.started)).getUTCHours() < 6).length, (p, v) => `${v} hits after midnight`);
+    award('speed', '⚡', 'Speed Demon', 'most war hits in one hour', people, p => {
+      let best = 0, i = 0;
+      for (let j = 0; j < p.list.length; j++) { while (p.list[j].started - p.list[i].started > 3600) i++; best = Math.max(best, j - i + 1); }
+      return best;
+    }, (p, v) => `${v} hits in an hour`);
+    award('slayer', '🗡️', 'Giant Slayer', 'beat the biggest level gap', people, p => Math.max(0, ...p.list.map(a => (a.defender.level || 0) - (a.attacker.level || 0))), (p, v) => {
+      const a = p.list.reduce((x, y) => ((y.defender.level || 0) - (y.attacker.level || 0) > (x.defender.level || 0) - (x.attacker.level || 0) ? y : x));
+      return `level ${a.attacker.level} beat level ${a.defender.level} ${a.defender.name}`;
+    });
+    award('ninja', '🥷', 'Ninja', 'most stealthed war hits', people, p => p.list.filter(a => a.is_stealthed).length, (p, v) => `${v} stealthed`);
+    // Incoming: who held off the enemy, and who spent the war in hospital
+    const defenders = new Map();
+    for (const a of inc) {
+      const o = defenders.get(a.defender.id) || { id: a.defender.id, name: a.defender.name, held: 0, hospital: 0 };
+      if (SUCCESS.has(a.result)) o.hospital++;
+      else if (a.result !== 'Assist' && a.result !== 'None') o.held++;
+      defenders.set(a.defender.id, o);
+    }
+    award('wall', '🧱', 'Brick Wall', 'most enemy attacks held off', [...defenders.values()], o => o.held, (o, v) => `${v} attack${v === 1 ? '' : 's'} survived`);
+    award('flyer', '🛌', 'Frequent Flyer', 'most trips to hospital (thanks for tanking)', [...defenders.values()], o => o.hospital, (o, v) => `${v} trip${v === 1 ? '' : 's'} to hospital`);
+    // The enemy we hit the most
+    const bags = new Map();
+    for (const a of won) { const o = bags.get(a.defender.id) || { id: a.defender.id, name: a.defender.name, n: 0 }; o.n++; bags.set(a.defender.id, o); }
+    const bag = [...bags.values()].sort((a, b) => b.n - a.n)[0];
+    attackStats = { outgoing: out.length, won: won.length, incoming: inc.length, enemyHospitalised: won.filter(a => a.result === 'Hospitalized').length, punchingBag: bag ? { id: bag.id, name: bag.name, hits: bag.n } : null };
+  }
+
+  // Score history from Mentat (lead changes, biggest lead, comeback)
+  let timeline = null;
+  if (history && history.warId === r.id && Array.isArray(history.points) && history.points.length > 1) {
+    let changes = 0, lastSign = 0, bestLead = 0, worst = 0, bestAt = 0, worstAt = 0;
+    for (const [t, a, b] of history.points) {
+      const d = a - b;
+      const s = Math.sign(d);
+      if (s && lastSign && s !== lastSign) changes++;
+      if (s) lastSign = s;
+      if (d > bestLead) { bestLead = d; bestAt = t; }
+      if (d < worst) { worst = d; worstAt = t; }
+    }
+    timeline = { leadChanges: changes, biggestLead: bestLead, biggestLeadAt: bestAt, biggestDeficit: -worst, biggestDeficitAt: worstAt, samples: history.points.length };
+  }
+
+  const won = r.winner === us.id;
+  return {
+    builtAt,
+    war: { id: r.id, start, end, duration: end - start, forfeit: !!r.forfeit, won, winner: r.winner, margin: us.score - them.score },
+    us: { ...us, members: undefined }, them: { ...them, members: undefined },
+    top: [...us.members].sort((a, b) => b.score - a.score || b.attacks - a.attacks),
+    spectators: us.members.filter(m => m.attacks === 0).map(m => ({ id: m.id, name: m.name, level: m.level })),
+    hitters: hitters.length, members: us.members.length,
+    enemyTop: [...them.members].sort((a, b) => b.score - a.score).slice(0, 3),
+    longestChain: longest, chainCount: chains.length,
+    attackStats, timeline, accolades,
+    sources: { chains: chains.length, attacks: Array.isArray(attacks) ? attacks.length : null, history: !!timeline },
+  };
+}
+
+// ---- Discord text: parts of at most DISCORD_LIMIT characters, split between sections ----
+function discordParts(m, { spectators = false, topN = 10 } = {}) {
+  const res = m.war.forfeit ? (m.war.won ? 'Victory (they forfeited)' : 'Defeat (forfeit)') : m.war.won ? 'Victory!' : 'Defeat';
+  const sections = [];
+  const head = [`## ⚔️ ${m.us.name} vs ${m.them.name} — ${res}`,
+    `**${num(m.us.score)} – ${num(m.them.score)}** · ${dur(m.war.duration)} · ranked war #${m.war.id}`,
+    `Hits: ${num(m.us.attacks)} ours, ${num(m.them.attacks)} theirs · ${m.hitters}/${m.members} of us landed a hit`];
+  if (m.us.rankBefore || m.us.rankAfter) head.push(`Rank: ${m.us.rankBefore || '?'} → ${m.us.rankAfter || '?'}`);
+  const rewards = [m.us.respect ? `${num(m.us.respect)} respect` : '', m.us.points ? `${num(m.us.points)} points` : '', ...m.us.items.map(i => `${i.quantity > 1 ? `${i.quantity}× ` : ''}${i.name}`)].filter(Boolean);
+  if (rewards.length) head.push(`Rewards: ${rewards.join(', ')}`);
+  if (m.timeline) {
+    const t = m.timeline;
+    const bits = [`${t.leadChanges} lead change${t.leadChanges === 1 ? '' : 's'}`];
+    if (t.biggestLead > 0) bits.push(`biggest lead ${num(t.biggestLead)}`);
+    if (t.biggestDeficit > 0) bits.push(`${m.war.won ? 'came back from' : 'trailed by up to'} ${num(t.biggestDeficit)}`);
+    head.push(`Swing: ${bits.join(' · ')}`);
+  }
+  if (m.longestChain && m.longestChain.chain) head.push(`Longest chain: ${num(m.longestChain.chain)} hits (${num(m.longestChain.respect)} respect)`);
+  sections.push(head.join('\n'));
+
+  const top = m.top.filter(x => x.attacks > 0).slice(0, topN);
+  if (top.length) {
+    const w = Math.min(18, Math.max(...top.map(x => x.name.length)));
+    const rows = top.map((x, i) => `${String(i + 1).padStart(2)}. ${x.name.slice(0, w).padEnd(w)}  ${pts(x.score).padStart(8)} pts  ${String(x.attacks).padStart(4)} hits`);
+    sections.push(`**Top scorers**\n\`\`\`\n${rows.join('\n')}\n\`\`\``);
+  }
+  if (m.accolades.length) {
+    sections.push(`**🏅 Accolades**\n${m.accolades.map(a => `${a.emoji} **${a.title}** — ${a.winners.map(w => `${w.name} (${w.text})`).join(', ')}`).join('\n')}`);
+  }
+  const theirs = [];
+  if (m.enemyTop[0]) theirs.push(`Their MVP: ${m.enemyTop[0].name} (${pts(m.enemyTop[0].score)} pts)`);
+  if (m.attackStats && m.attackStats.punchingBag) theirs.push(`Punching bag: ${m.attackStats.punchingBag.name} (hit ${m.attackStats.punchingBag.hits}×)`);
+  if (theirs.length) sections.push(`**😈 Their side** — ${theirs.join(' · ')}`);
+  if (spectators && m.spectators.length) sections.push(`**🍿 Watched from the stands** — ${m.spectators.map(s => s.name).join(', ')}`);
+  sections.push('-# Built with Mentat');
+
+  // Pack sections into parts under the limit; a section that's too long on its own is cut by lines.
+  const parts = [];
+  let cur = '';
+  const push = s => { if (cur && (cur + '\n\n' + s).length > DISCORD_LIMIT) { parts.push(cur); cur = s; } else cur = cur ? `${cur}\n\n${s}` : s; };
+  for (const s of sections) {
+    if (s.length <= DISCORD_LIMIT) { push(s); continue; }
+    let chunk = '';
+    for (const line of s.split('\n')) {
+      if ((chunk + '\n' + line).length > DISCORD_LIMIT) { push(chunk); chunk = line; } else chunk = chunk ? `${chunk}\n${line}` : line;
+    }
+    if (chunk) push(chunk);
+  }
+  if (cur) parts.push(cur);
+  return parts;
+}
+
+// ---- The feature: fetch, build, keep ----
+class WarReportFeature extends EventEmitter {
+  constructor({ api, war, dataDir }) {
+    super();
+    this.api = api;
+    this.war = war;
+    this.store = new Store(`${dataDir}/war-reports.json`, { reports: {} }, { debounceMs: 2000 });
+    this.state = { building: 0, progress: '', error: '', wars: null };
+  }
+
+  snapshot() {
+    return { ...this.state, built: Object.keys(this.store.get('reports') || {}).map(Number) };
+  }
+
+  tick() {}
+
+  ownId() {
+    return (this.war.state.own && this.war.state.own.id) || 0;
+  }
+
+  set(patch) {
+    this.state = { ...this.state, ...patch };
+    this.emit('state');
+  }
+
+  // Your faction's recent ranked wars, newest first.
+  async listWars() {
+    const d = await this.api.request('/v2/faction/rankedwars?limit=20&sort=DESC', { soft: [6, 7, 16], priority: 3 });
+    const own = this.ownId();
+    const wars = (d.rankedwars || []).map(w => {
+      const fs = w.factions || [];
+      const them = fs.find(f => f.id !== own) || {};
+      const us = fs.find(f => f.id === own) || {};
+      return { id: w.id, start: s2ms(w.start), end: s2ms(w.end), winner: w.winner || 0, us: us.score || 0, them: them.score || 0, opponent: them.name || '' };
+    });
+    this.set({ wars });
+    return wars;
+  }
+
+  // The report for one war: kept, or built now. fresh = build again.
+  async build(warId, { fresh = false } = {}) {
+    const id = Number(warId);
+    if (!Number.isInteger(id) || id <= 0) throw new Error('Which war?');
+    const kept = (this.store.get('reports') || {})[id];
+    if (kept && !fresh) return kept;
+    const own = this.ownId();
+    if (!own) throw new Error('Your faction is still loading; try again in a moment.');
+    this.set({ building: id, progress: 'War report…', error: '' });
+    try {
+      const d = await this.api.request(`/v2/faction/${id}/rankedwarreport`, { soft: [6, 7], priority: PRIORITY });
+      const report = d.rankedwarreport;
+      if (!report || !report.end) throw new Error("That war hasn't finished (Torn makes its report when it ends).");
+      if (!(report.factions || []).some(f => f.id === own)) throw new Error("Your faction wasn't in that war.");
+      // Your chains during the war
+      this.set({ progress: 'Chains…' });
+      const c = await this.api.request(`/v2/faction/chains?from=${report.start - 86400}&to=${report.end + 3600}&limit=100`, { soft: [6, 7], priority: PRIORITY });
+      const during = (c.chains || []).filter(x => x.end >= report.start && x.start <= report.end);
+      const chains = [];
+      for (const [i, ch] of during.entries()) {
+        this.set({ progress: `Chain reports ${i + 1}/${during.length}…` });
+        try { const cr = await this.api.request(`/v2/faction/${ch.id}/chainreport`, { soft: [6, 7], priority: PRIORITY }); if (cr.chainreport) chains.push(cr.chainreport); } catch (e) { /* skip one */ }
+      }
+      // Every attack in the war (faction API access only)
+      let attacks = [];
+      let from = report.start;
+      const seen = new Set();
+      for (let page = 0; page < MAX_ATTACK_PAGES; page++) {
+        this.set({ progress: `Attacks ${attacks.length ? `(${num(attacks.length)})` : ''}…` });
+        let a;
+        try {
+          a = await this.api.request(`/v2/faction/attacks?from=${from}&to=${report.end}&limit=100&sort=ASC`, { soft: [6, 7, 16], priority: PRIORITY });
+        } catch (e) {
+          if (e.kind === 'soft') { attacks = null; break; } // no faction API access
+          throw e;
+        }
+        const list = (a.attacks || []).filter(x => !seen.has(x.id));
+        for (const x of list) seen.add(x.id);
+        attacks.push(...list);
+        if ((a.attacks || []).length < 100 || !list.length) break;
+        from = Math.max(from, ...list.map(x => x.started));
+      }
+      const history = this.war.history ? this.war.history() : null;
+      const model = buildModel({ report, ownId: own, chains, attacks, history });
+      const all = this.store.get('reports') || {};
+      all[id] = model;
+      // Keep the 20 newest
+      const keep = Object.keys(all).map(Number).sort((a, b) => b - a).slice(0, 20);
+      this.store.set('reports', Object.fromEntries(keep.map(k => [k, all[k]])));
+      this.set({ building: 0, progress: '' });
+      return model;
+    } catch (e) {
+      this.set({ building: 0, progress: '', error: e.message });
+      throw e;
+    }
+  }
+
+  flush() { this.store.flush(); }
+}
+
+module.exports = { WarReportFeature, buildModel, discordParts };
+
+  },
 };
 const CACHE = {};
 function load(id) {
@@ -6005,5 +6566,5 @@ function load(id) {
   DEFS[id].call(module.exports, module, module.exports, req);
   return module.exports;
 }
-window.Mentat = { version: "0.1.26", load: SHIMS.load, persistNow: SHIMS.persistNow, require: load, Buffer };
+window.Mentat = { version: "0.1.28", load: SHIMS.load, persistNow: SHIMS.persistNow, require: load, Buffer };
 })();

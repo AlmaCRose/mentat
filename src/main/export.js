@@ -50,6 +50,14 @@ async function renderImage(cardHtml) {
   }
 }
 
+// Any card (the War report) as an image on the clipboard.
+async function copyCardImage(html) {
+  const img = await renderImage(html);
+  const ClipItem = require('electron').ClipboardItem || globalThis.ClipboardItem;
+  await clipboard.write([new ClipItem({ 'image/png': new Blob([img.toPNG()], { type: 'image/png' }) })]);
+  return { copied: true, width: img.getSize().width, height: img.getSize().height };
+}
+
 async function exportResearch(p, parent) {
   const img = await renderImage(p.overview);
   // Electron 45's clipboard takes ClipboardItems (writeImage is gone).
@@ -107,4 +115,4 @@ async function exportIntel(p, parent) {
   return { pdf: pdfPath, html: `${base}.html`, csv: p.csv ? `${base}.csv` : '' };
 }
 
-module.exports = { exportResearch, exportIntel, renderImage };
+module.exports = { exportResearch, exportIntel, renderImage, copyCardImage };

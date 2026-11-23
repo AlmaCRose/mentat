@@ -22,6 +22,9 @@ const COVER_GRACE = 10 * 60e3; // server unreachable this long -> collect here a
 const START_GRACE = 3 * 60e3;  // ...but not in the first minutes after launch
 // How often each data set may be downloaded (when the server says it changed).
 const PULL_EVERY = { research: 2 * 60e3, war: 60e3, travel: 2 * 60e3, prices: 30 * 60e3, bazaar: 30 * 60e3, scout: 5 * 60e3 };
+// After you pick a faction to research: check every 10 s (for up to 5 minutes) until its first data arrives.
+const RESEARCH_WAIT = 5 * 60e3;
+const RESEARCH_WAIT_POLL = 10e3;
 // Commands that change synced settings (settings.set is handled by path).
 const AFTER_COMMAND = {
   'targets.add': ['targets.list'], 'targets.addCurrent': ['targets.list'], 'targets.remove': ['targets.list'], 'targets.clear': ['targets.list'],
@@ -315,7 +318,7 @@ class SyncFeature extends EventEmitter {
       }
       for (const name of DATASETS) {
         if (!st.revs || !st.revs[name] || st.revs[name] === this.pulledRev[name]) continue;
-        if (this.pulledRev[name] && now - (this.pulledAt[name] || 0) < PULL_EVERY[name]) continue;
+        if (this.pulledRev[name] && now - (this.pulledAt[name] || 0) < PULL_EVERY[name] && !(name === 'research' && this.researchWaiting(now))) continue;
         if (!st.collect || st.collect[name] === false) continue;
         // One data set failing (a bad download, a merge error) must not stop the ones after it.
         try {
@@ -328,7 +331,7 @@ class SyncFeature extends EventEmitter {
         }
       }
       if (!wasCovering) { this.research.emit('state'); this.travel.emit('state'); }
-      this.nextPoll = Date.now() + STATUS_EVERY;
+      this.nextPoll = Date.now() + (this.researchWaiting() ? RESEARCH_WAIT_POLL : STATUS_EVERY);
     } catch (e) {
       this.error = e.message;
       if (this.upload && this.upload.running) { this.upload.running = false; this.upload.error = e.message; }
@@ -372,6 +375,25 @@ class SyncFeature extends EventEmitter {
   afterCommand(name, args) {
     if (name === 'settings.set') { const u = unitFor(args[0]); if (u) this.markDirty([u]); }
     else if (AFTER_COMMAND[name]) this.markDirty(AFTER_COMMAND[name]);
+    // A faction you just picked for research: check the server often until its first data is here.
+    if (name === 'research.watch' && Number(args[0]) > 0) this.researchWaitUntil = Date.now() + RESEARCH_WAIT;
+  }
+
+  // A member's device (signed in to someone else's server) gets the owner's research picks, since only
+  // those are collected. null on the owner's devices, before the first status check, or with no server.
+  ownerResearchPicks() {
+    if (this.mode() !== 'server' || this.kind() !== 'session' || !this.server) return null;
+    const acct = this.server.account;
+    if (!acct || !this.me || Number(this.me.id) === Number(acct.id)) return null; // the owner, signed in with their key
+    return (this.server.research && this.server.research.tracked) || [];
+  }
+
+  // True while a faction you picked has no data on this device yet (for a few minutes after the pick).
+  researchWaiting(now = Date.now()) {
+    if (!(now < (this.researchWaitUntil || 0))) return false;
+    const id = Number(this.store.get('research.watchId')) || 0;
+    const rec = id && this.research.rec(id);
+    return !!id && !(rec && rec.members && Object.keys(rec.members).length);
   }
 
   async syncSettings(st) {
