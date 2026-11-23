@@ -1355,7 +1355,7 @@ const RENDER = {
   chain: () => { renderChain(); renderSafe('war', renderWar); },
   targets: renderTargets,
   travel: () => { renderSafe('travel', renderTravel); renderSafe('planner', renderPlanner); },
-  planner: () => renderSafe('planner', renderPlanner),
+  planner: () => { renderSafe('planner', renderPlanner); renderSafe('travel', renderTravel); }, // Travel marks trips already planned
   avatars: () => { fillAvatars(); renderAccountButton(); },
   market: () => {
     const m = S.features.market;

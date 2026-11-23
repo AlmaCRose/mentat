@@ -150,6 +150,8 @@ function timedTrips(M, horizonMs = 6 * 3600 * 1000, opt = {}) {
       seen.push(l.at);
       const t = planTrip(M, c, l.at - f, opt);
       t.timed = !!l.target;
+      t.target = l.target || 0;       // the item whose restock this trip is timed to
+      t.restockAt = l.restockAt || 0;
       t.wait = l.at - f - now;
       trips.push(t);
     }
@@ -340,6 +342,51 @@ function drawRestockHist(M, code) {
   }).catch(() => {});
 }
 
+// ---- Add a trip to the Planner ----
+// A trip leaving within a minute counts as "now": it's planned for the next whole minute when you click.
+const NEXT_MINUTE = () => Math.ceil((Date.now() + 1000) / MINUTE) * MINUTE;
+// The same trip already in your plan: same country, leaving within 3 minutes of it.
+function plannedTrip(code, leaveAt) {
+  const P = S.features && S.features.planner;
+  return Object.values((P && P.items) || {}).find(it => it && !it.deleted && it.type === 'trip' && it.country === code && Math.abs(it.at - leaveAt) < 3 * MINUTE) || null;
+}
+// "Add to planner" for one trip, or "In planner" (opens the Planner) once it's there.
+// itemId: the item the trip is for (your chosen item, or the restock it's timed to); else the top of the load.
+function planButton(t, itemId = 0, restockAt = 0) {
+  const now = t.leaveAt - Date.now() < MINUTE;
+  const at = now ? NEXT_MINUTE() : Math.round(t.leaveAt / MINUTE) * MINUTE;
+  if (plannedTrip(t.country.code, at)) return '<button class="tplan added" data-tplanopen title="This trip is in your Planner. Click to open the Planner.">✓ In planner</button>';
+  const id = itemId || (t.inbound.lines[0] ? t.inbound.lines[0].id : 0);
+  return `<button class="tplan" data-tplan="${t.country.code}|${now ? 'now' : at}|${id}|${restockAt || 0}" title="Add this trip to your Planner: leave ${now ? 'now' : tct(at)} (TCT) for ${esc(t.country.name)}">Add to planner</button>`;
+}
+async function addTripToPlan(btn) {
+  const [code, when, itemStr, restockStr] = btn.dataset.tplan.split('|');
+  const M = travelModel();
+  const at = when === 'now' ? NEXT_MINUTE() : Number(when);
+  const itemId = Number(itemStr) || 0, restockAt = Number(restockStr) || 0;
+  const country = M ? M.T.countries.find(c => c.code === code) : null;
+  btn.disabled = true;
+  try {
+    await cmd('planner.add', {
+      type: 'trip', at, country: code, method: M ? M.method : 'Standard', itemId, stay: 0,
+      // A 5-minute warning when there's time for one; none for a trip you're about to take.
+      remind: at - Date.now() > 6 * MINUTE ? 5 : at - Date.now() > 2 * MINUTE ? 0 : -1,
+      note: restockAt && itemId ? `Timed to land after the ${itemName(itemId)} restock (~${tct(restockAt)} TCT)` : '',
+    });
+    // Make sure the plan covers the day of the trip.
+    const P = S.features.planner;
+    const need = Math.floor((at - pmDayStart(Date.now())) / PM_DAY) + 1;
+    if (P && need > (P.days || 3)) cmd('settings.set', 'planner.days', Math.min(60, need));
+    btn.className = 'tplan added';
+    btn.removeAttribute('data-tplan');
+    btn.setAttribute('data-tplanopen', '');
+    btn.textContent = '✓ In planner';
+    btn.title = 'This trip is in your Planner. Click to open the Planner.';
+    btn.disabled = false;
+    toast(`Added to the Planner: trip to ${country ? country.name : code}, leave ${tct(at)} TCT.`, 4000);
+  } catch (ex) { btn.disabled = false; toast(ex.message || String(ex)); }
+}
+
 // ---- Timed trips: leave so you land as stock restocks ----
 function renderTimed(body, M) {
   const now = Date.now();
@@ -416,8 +463,9 @@ function renderTimed(body, M) {
       <td class="num ${signClass(t.profit)}"><b>${money(t.profit, true)}</b></td>
       <td class="num">${money(t.perHour, true)}</td>
       <td>${t.timed && target ? `restock ${confPill(target.pred.conf)}` : '<span class="pill">current stock</span>'}</td>
+      <td>${planButton(t, focus || t.target, t.timed ? t.restockAt : 0)}</td>
     </tr>
-    ${open === key ? `<tr class="detail"><td colspan="7">${tripDetail(M, t)}</td></tr>` : ''}`;
+    ${open === key ? `<tr class="detail"><td colspan="8">${tripDetail(M, t)}</td></tr>` : ''}`;
   };
 
   body.innerHTML = `
@@ -445,8 +493,8 @@ function renderTimed(body, M) {
       <option value="leave" ${sortKey === 'leave' ? 'selected' : ''}>Departure time</option></select></label>
       <span class="muted small">${trips.length} options in the next 6 hours${focus ? `, timed to ${esc(abroad.get(focus).name)} restocks` : ''}</span></div>
     <div class="table-wrap"><table class="data">
-      <tr><th>Leave</th><th>Destination</th><th>Land</th><th>Bring home</th><th class="num">Profit</th><th class="num">Per hour</th><th>Based on</th></tr>
-      ${trips.slice(0, 40).map(tripRow).join('') || '<tr><td colspan="7" class="muted">No profitable trips found yet.</td></tr>'}
+      <tr><th>Leave</th><th>Destination</th><th>Land</th><th>Bring home</th><th class="num">Profit</th><th class="num">Per hour</th><th>Based on</th><th><span class="sr-only">Planner</span></th></tr>
+      ${trips.slice(0, 40).map(tripRow).join('') || '<tr><td colspan="8" class="muted">No profitable trips found yet.</td></tr>'}
     </table></div>
     <div class="note">Each timed trip lands a moment after a predicted restock (after its uncertainty has passed, but well before it usually sells out). Expected stock = typical restock size minus what usually sells before you land. Profit includes selling abroad when that's turned on, minus the ticket.</div>
 
@@ -570,7 +618,7 @@ function renderPlan(body, M) {
     </div>` : ''}
     <div class="toolbar">${tvSortBar('plan', cols, ss)}</div>
     <div class="table-wrap"><table class="data">
-      <tr>${tvHeads('plan', cols, ss)}</tr>
+      <tr>${tvHeads('plan', cols, ss)}<th><span class="sr-only">Planner</span></th></tr>
       ${trips.map(t => `
         <tr class="clickable ${open === t.country.code ? 'selected' : ''}" data-topen="${t.country.code}">
           <td><b>${esc(t.country.name)}</b><div class="muted small">YATA ${t.country.update ? fmtAgo(t.country.update) : 'n/a'}</div></td>
@@ -582,8 +630,9 @@ function renderPlan(body, M) {
           <td class="num"><b>${money(t.perHour, true)}</b></td>
           <td class="num">${money(t.cash, true)}</td>
           <td>${riskPill(t.risk)}</td>
+          <td>${planButton(t)}</td>
         </tr>
-        ${open === t.country.code ? `<tr class="detail"><td colspan="${M.ts.outbound ? 9 : 8}">${tripDetail(M, t)}</td></tr>` : ''}`).join('')}
+        ${open === t.country.code ? `<tr class="detail"><td colspan="${M.ts.outbound ? 10 : 9}">${tripDetail(M, t)}</td></tr>` : ''}`).join('')}
     </table></div>
     <div class="note">Trip profit = items you bring home (sold at ${M.ts.sellMode === 'live' ? 'the cheapest current listing' : 'market value'}) ${M.ts.outbound ? '+ items you sell abroad ' : ''}− ticket. Per hour uses the round trip (2 × flight). Stock at landing uses YATA's last reading minus the sell rate measured on this PC; it gets more accurate the longer the app runs.</div>`;
   if (open) drawRestockHist(M, open);
@@ -635,9 +684,9 @@ function tripDetail(M, t) {
         ${M.ts.outbound ? `<div class="chart-title">Sell abroad (sorted by profit each)</div>
         <table class="data"><tr><th>Item</th><th>Shop</th><th class="num">Buy at home</th><th class="num">Sells abroad</th><th class="num">Each</th><th>Plan</th></tr>${optionsOut}</table>` : ''}` : ''}
       <div style="margin-top:10px"><b>When to leave</b> <span class="muted small">(${M.method}, ${fmtMin(t.flight.min)} each way; ${deps.some(d => d.timed) ? 'timed to restocks learned from YATA' : `no restocks learned yet, so assuming every ${M.ts.restockInterval} min${M.ts.restockOffset ? ` +${M.ts.restockOffset}` : ''}`}; all times TCT)</span></div>
-      <table class="data"><tr><th>Leave</th><th>Land</th><th class="num">Bring home</th><th class="num">Trip profit</th><th>Stock</th></tr>
-        <tr><td>Now (${tct(t.leaveAt)})</td><td>${tct(t.landAt)}</td><td class="num">${money(t.inbound.total, true)}</td><td class="num ${signClass(t.profit)}">${money(t.profit, true)}</td><td>${riskPill(t.risk)}</td></tr>
-        ${deps.map(d => `<tr><td>${tct(d.leaveAt)} <span class="muted small">in ${fmtMin((d.leaveAt - Date.now()) / 60000)}</span></td><td>${tct(d.landAt)}</td><td class="num">${money(d.inbound.total, true)}</td><td class="num ${signClass(d.profit)}">${money(d.profit, true)}</td><td>${riskPill(d.risk)}</td></tr>`).join('')}
+      <table class="data"><tr><th>Leave</th><th>Land</th><th class="num">Bring home</th><th class="num">Trip profit</th><th>Stock</th><th><span class="sr-only">Planner</span></th></tr>
+        <tr><td>Now (${tct(t.leaveAt)})</td><td>${tct(t.landAt)}</td><td class="num">${money(t.inbound.total, true)}</td><td class="num ${signClass(t.profit)}">${money(t.profit, true)}</td><td>${riskPill(t.risk)}</td><td>${planButton(t, t.focus || t.target, t.timed ? t.restockAt : 0)}</td></tr>
+        ${deps.map(d => `<tr><td>${tct(d.leaveAt)} <span class="muted small">in ${fmtMin((d.leaveAt - Date.now()) / 60000)}</span></td><td>${tct(d.landAt)}</td><td class="num">${money(d.inbound.total, true)}</td><td class="num ${signClass(d.profit)}">${money(d.profit, true)}</td><td>${riskPill(d.risk)}</td><td>${planButton(d, d.target, d.timed ? d.restockAt : 0)}</td></tr>`).join('')}
       </table>
       ${restockHistoryShell(M, c, t)}
     </div>`;
@@ -818,6 +867,9 @@ function initTravel() {
     if (e.target.closest('[data-item],[data-open]')) return;
     const s = e.target.closest('[data-tsub]');
     if (s) { prefs.set('travel.sub', s.dataset.tsub); renderTravel(); return; }
+    const pa = e.target.closest('[data-tplan]');
+    if (pa) { e.stopPropagation(); if (!pa.disabled) addTripToPlan(pa); return; }
+    if (e.target.closest('[data-tplanopen]')) { e.stopPropagation(); showPanel('planner'); return; }
     const live = e.target.closest('[data-tlive]');
     if (live) { e.stopPropagation(); cmd('market.live', live.dataset.tlive.split(',').map(Number)); live.disabled = true; live.textContent = 'Checking…'; return; }
     const w = e.target.closest('[data-twatch]');

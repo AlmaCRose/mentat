@@ -650,6 +650,9 @@ table.data th[data-tvsort] { cursor: pointer; user-select: none; white-space: no
 table.data th[data-tvsort]:hover { color: var(--text); }
 table.data td { vertical-align: top; }
 table.data tr.clickable { cursor: pointer; }
+/* Travel: "Add to planner" on each trip */
+button.tplan { padding: 2px 8px; font-size: 12px; white-space: nowrap; }
+button.tplan.added { color: var(--muted); }
 table.data tr.clickable:hover td { background: var(--row-hover); }
 table.data tr.selected td { background: var(--row-selected); }
 table.data tr.dim td { color: var(--muted); }
