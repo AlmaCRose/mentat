@@ -1,4 +1,4 @@
-// Mentat 0.1.32: the core for web browsers. Built by scripts/pack-web.js from src/main; don't edit.
+// Mentat 0.1.33: the core for web browsers. Built by scripts/pack-web.js from src/main; don't edit.
 (function () {
 'use strict';
 // Browser stand-ins for the Node and Electron modules Mentat's core uses (bundled into
@@ -366,6 +366,35 @@ function createCore(host) {
         .finally(() => { this.busy = false; });
     },
   };
+  // FFScouter Premium reminder (the user's request, 2026-11-24): 24 hours before Premium runs out,
+  // once across all of the person's devices. The end date comes from any device's key check and is
+  // synced (ffscouter.premiumUntil), as is the end date already reminded about
+  // (ffscouter.premiumReminded). Whichever device is running when the time comes shows it; if none
+  // is, the next one to start does. A device waits until it has the server's synced settings (or
+  // 10 minutes, if it can't reach the server), so it doesn't repeat what another device showed.
+  const premiumReminder = {
+    at: 0, startedAt: Date.now(),
+    tick(now) {
+      if (now - this.at < 60e3) return;
+      this.at = now;
+      const acct = store.get('ffscouter.account') || {};
+      const synced = Number(store.get('ffscouter.premiumUntil')) || 0;
+      const until = Math.max(synced, Number(acct.premiumUntil) || 0);
+      if (until !== synced) { store.set('ffscouter.premiumUntil', until); sync.markDirty(['ffscouter.premiumUntil']); }
+      if (!until || now < until - 24 * 3600e3) return;
+      if ((Number(store.get('ffscouter.premiumReminded')) || 0) >= until) return;
+      if (sync.configured() && !sync.settingsFresh() && now - this.startedAt < 10 * 60e3) return;
+      store.set('ffscouter.premiumReminded', until);
+      sync.markDirty(['ffscouter.premiumReminded']);
+      const left = until - now;
+      const when = `${new Date(until).toISOString().slice(0, 16).replace('T', ' ')} TCT`;
+      const inTime = left >= 3600e3 ? `${Math.round(left / 3600e3)} hours` : `${Math.max(1, Math.round(left / 60e3))} minutes`;
+      const title = left > 0 ? `FFScouter Premium ends in ${inTime}` : 'FFScouter Premium has ended';
+      const body = `${left > 0 ? 'It runs out' : 'It ran out'} ${when}. Renew at ffscouter.com to keep FFScouter activity history and stat growth in Oppo Research and the team war pages.`;
+      // Stays on screen until dismissed (urgent popup), one sound, no repeats.
+      host.notify(title, body, 'https://ffscouter.com/premium', { ...urgentOpts(), repeat: 0 });
+    },
+  };
   const features = { user, chain, research, scout, war, claims, warreport, targets, market, travel, bazaar, ffscouter, alerts, casino, planner, avatars, sync, ...(host.extraFeatures || {}) };
 
   // Settings changed on another device (from the Mentat server).
@@ -400,6 +429,7 @@ function createCore(host) {
       try { f.tick(now); } catch (e) { console.error(e); }
     }
     try { ffsShare.tick(now); } catch (e) { console.error(e); }
+    try { premiumReminder.tick(now); } catch (e) { console.error(e); }
   }, 1000);
 
   // ---- Settings sent to the page (never a key) ----
@@ -570,7 +600,7 @@ function createCore(host) {
 
   return {
     api, features, commands, publicSettings, setSetting, applySynced, flushAll, stop,
-    user, chain, targets, market, travel, bazaar, war, research, scout, ffscouter, alerts, casino, sync, history, cache,
+    user, chain, targets, market, travel, bazaar, war, research, scout, ffscouter, alerts, casino, sync, history, cache, premiumReminder,
   };
 }
 
@@ -602,7 +632,7 @@ const DEFAULTS = {
     override: {}, learned: {}, lastMethod: '', capacityApi: null,
   },
   market: { watch: {}, watchInterval: 300, payoutPct: 95, bazaar: true, priceSource: 'both' },
-  ffscouter: { keyEnc: '', account: null, acknowledgedAt: 0, stats: {}, intervalHours: 6 },
+  ffscouter: { keyEnc: '', account: null, acknowledgedAt: 0, stats: {}, intervalHours: 6, premiumUntil: 0, premiumReminded: 0 },
   alerts: { rules: [], volume: 0.6 },
   // live: seconds between enemy refreshes while you watch the War tab during a war (0 = off)
   war: { watchId: 0, interval: 30, pinned: [], live: 3 },
@@ -1562,6 +1592,9 @@ const SYNC_UNITS = [
   'planner.items', 'planner.days',
   'war.watchId', 'war.interval', 'war.live', 'war.pinned', 'research.watchId',
   'ffscouter.intervalHours', 'scout.spread',
+  // FFScouter Premium's end (from any device's key check) and the end date already reminded about,
+  // so the 24-hour reminder shows once across all your devices (core.js premiumReminder).
+  'ffscouter.premiumUntil', 'ffscouter.premiumReminded',
   'chatwin.emojis', 'chatwin.onTop', 'chatwin.minimizeToBubble', 'chatwin.compact', 'chatwin.hideInBrowser',
 ];
 const UNIT_SET = new Set(SYNC_UNITS);
@@ -1694,7 +1727,12 @@ function prunePlan(items, now = Date.now()) {
   return out;
 }
 
+// Dates that only move forward: the later of the two copies wins.
+const LATEST_UNITS = new Set(['ffscouter.premiumUntil', 'ffscouter.premiumReminded']);
+const latest = (a, b) => Math.max(Number(a) || 0, Number(b) || 0);
+
 function joinUnit(unit, local, remote) {
+  if (LATEST_UNITS.has(unit)) return latest(local, remote);
   if (unit === 'planner.items') return mergePlan(local, remote);
   if (unit === 'targets.list' || unit === 'market.watch' || unit === 'travel.learned' || unit === 'travel.override' || unit === 'gamble.log') {
     return { ...(isObj(local) ? local : {}), ...(isObj(remote) ? remote : {}) };
@@ -1711,6 +1749,7 @@ function joinUnit(unit, local, remote) {
 // A setting another PC changed, applied here. Targets keep this PC's fresher status
 // checks; watched items keep whether this PC already alerted.
 function applyUnit(unit, local, remote) {
+  if (LATEST_UNITS.has(unit)) return latest(local, remote);
   if (unit === 'targets.list' && isObj(remote)) {
     const out = {};
     for (const [id, t] of Object.entries(remote)) {
@@ -1911,6 +1950,10 @@ class SyncFeature extends EventEmitter {
 
   // True once this device has the server's copy of a data set (this session).
   hasPulled(name) { return !!this.pulledRev[name]; }
+
+  // True once this device has checked the server's synced settings (this session): what other
+  // devices did (e.g. already showed a once-only reminder) is known by then.
+  settingsFresh() { return !!this.settingsAt; }
 
   // True while the server collects research and abroad stock instead of this PC.
   covering(now = Date.now()) {
@@ -2163,6 +2206,7 @@ class SyncFeature extends EventEmitter {
       }
       this.store.set('sync.settingsRev', Number(got.rev) || 0);
     }
+    this.settingsAt = Date.now(); // this device has the server's settings (this session)
     if (this.dirty.size) {
       const send = [...this.dirty];
       const units = Object.fromEntries(send.map(u => [u, this.store.get(u) ?? null]));
@@ -3609,6 +3653,7 @@ class FFScouterFeature extends EventEmitter {
       const info = await call('check-key', { key: this.getKey() });
       const was = this.store.get('ffscouter.account') || {};
       this.store.set('ffscouter.account', { ...was, premium: !!info.is_premium, premiumUntil: (info.premium_expires_at || 0) * 1000, policyUpdate: !!info.policy_update_required, checkedAt: Date.now() });
+      this.emit('account');
       this.emit('state');
     } catch (e) {
       if (e.code in KEY_ERRORS) this.handleError(e);
@@ -3622,8 +3667,9 @@ class FFScouterFeature extends EventEmitter {
 
   tick(now) {
     if (!this.hasKey() || this.inFlight || now < this.pausedUntil) return;
+    // Every 6 hours with Premium; every hour without, so a renewal is picked up soon.
     const acct = this.store.get('ffscouter.account') || {};
-    if (!this.accountBusy && now - (acct.checkedAt || 0) > 6 * 3600e3) { this.checkAccount(); return; }
+    if (!this.accountBusy && now - (acct.checkedAt || 0) > (acct.premium ? 6 : 1) * 3600e3) { this.checkAccount(); return; }
     const every = Math.max(1, Number(this.store.get('ffscouter.intervalHours')) || 6) * 3600 * 1000;
     const s = this.stats();
     const due = this.getTargetIds().filter(id => !s[id] || now - (s[id].fetchedAt || 0) >= every);
@@ -6710,5 +6756,5 @@ function load(id) {
   DEFS[id].call(module.exports, module, module.exports, req);
   return module.exports;
 }
-window.Mentat = { version: "0.1.32", load: SHIMS.load, persistNow: SHIMS.persistNow, require: load, Buffer };
+window.Mentat = { version: "0.1.33", load: SHIMS.load, persistNow: SHIMS.persistNow, require: load, Buffer };
 })();

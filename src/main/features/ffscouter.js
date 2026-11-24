@@ -165,6 +165,7 @@ class FFScouterFeature extends EventEmitter {
       const info = await call('check-key', { key: this.getKey() });
       const was = this.store.get('ffscouter.account') || {};
       this.store.set('ffscouter.account', { ...was, premium: !!info.is_premium, premiumUntil: (info.premium_expires_at || 0) * 1000, policyUpdate: !!info.policy_update_required, checkedAt: Date.now() });
+      this.emit('account');
       this.emit('state');
     } catch (e) {
       if (e.code in KEY_ERRORS) this.handleError(e);
@@ -178,8 +179,9 @@ class FFScouterFeature extends EventEmitter {
 
   tick(now) {
     if (!this.hasKey() || this.inFlight || now < this.pausedUntil) return;
+    // Every 6 hours with Premium; every hour without, so a renewal is picked up soon.
     const acct = this.store.get('ffscouter.account') || {};
-    if (!this.accountBusy && now - (acct.checkedAt || 0) > 6 * 3600e3) { this.checkAccount(); return; }
+    if (!this.accountBusy && now - (acct.checkedAt || 0) > (acct.premium ? 6 : 1) * 3600e3) { this.checkAccount(); return; }
     const every = Math.max(1, Number(this.store.get('ffscouter.intervalHours')) || 6) * 3600 * 1000;
     const s = this.stats();
     const due = this.getTargetIds().filter(id => !s[id] || now - (s[id].fetchedAt || 0) >= every);

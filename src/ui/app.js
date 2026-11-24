@@ -1018,7 +1018,7 @@ function renderFFSAccount() {
   const f = S.features.ffscouter || {};
   const a = f.account;
   el.innerHTML = f.hasKey
-    ? `<div class="row between"><span>Connected${a ? ` · <span class="muted">${a.premium ? `premium${a.premiumUntil ? ` until ${new Date(a.premiumUntil).toLocaleDateString()}` : ''}` : 'free account'}</span>` : ''}${a && a.policyUpdate ? ' · <span class="neg">FFScouter\'s data policy changed; please re-read it on their site</span>' : ''}</span><button class="danger" data-cmd="ffscouter.removeKey">Remove</button></div>`
+    ? `<div class="row between"><span>Connected${a ? ` · <span class="muted">${a.premium ? `premium${a.premiumUntil ? ` until ${new Date(a.premiumUntil).toLocaleDateString()} · a reminder pops up 24 hours before, on whichever device you're using (checked every 6 hours)` : ''}` : 'free account (checked again every hour)'}</span>` : ''}${a && a.policyUpdate ? ' · <span class="neg">FFScouter\'s data policy changed; please re-read it on their site</span>' : ''}</span><button class="danger" data-cmd="ffscouter.removeKey">Remove</button></div>`
     : `<div class="muted">${f.error ? `<span class="neg">${esc(f.error)}</span>` : 'No FFScouter key saved.'}</div>`;
   $('#ffs-key-form').hidden = !!f.hasKey;
 }

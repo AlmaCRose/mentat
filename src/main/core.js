@@ -190,6 +190,35 @@ function createCore(host) {
         .finally(() => { this.busy = false; });
     },
   };
+  // FFScouter Premium reminder (the user's request, 2026-11-24): 24 hours before Premium runs out,
+  // once across all of the person's devices. The end date comes from any device's key check and is
+  // synced (ffscouter.premiumUntil), as is the end date already reminded about
+  // (ffscouter.premiumReminded). Whichever device is running when the time comes shows it; if none
+  // is, the next one to start does. A device waits until it has the server's synced settings (or
+  // 10 minutes, if it can't reach the server), so it doesn't repeat what another device showed.
+  const premiumReminder = {
+    at: 0, startedAt: Date.now(),
+    tick(now) {
+      if (now - this.at < 60e3) return;
+      this.at = now;
+      const acct = store.get('ffscouter.account') || {};
+      const synced = Number(store.get('ffscouter.premiumUntil')) || 0;
+      const until = Math.max(synced, Number(acct.premiumUntil) || 0);
+      if (until !== synced) { store.set('ffscouter.premiumUntil', until); sync.markDirty(['ffscouter.premiumUntil']); }
+      if (!until || now < until - 24 * 3600e3) return;
+      if ((Number(store.get('ffscouter.premiumReminded')) || 0) >= until) return;
+      if (sync.configured() && !sync.settingsFresh() && now - this.startedAt < 10 * 60e3) return;
+      store.set('ffscouter.premiumReminded', until);
+      sync.markDirty(['ffscouter.premiumReminded']);
+      const left = until - now;
+      const when = `${new Date(until).toISOString().slice(0, 16).replace('T', ' ')} TCT`;
+      const inTime = left >= 3600e3 ? `${Math.round(left / 3600e3)} hours` : `${Math.max(1, Math.round(left / 60e3))} minutes`;
+      const title = left > 0 ? `FFScouter Premium ends in ${inTime}` : 'FFScouter Premium has ended';
+      const body = `${left > 0 ? 'It runs out' : 'It ran out'} ${when}. Renew at ffscouter.com to keep FFScouter activity history and stat growth in Oppo Research and the team war pages.`;
+      // Stays on screen until dismissed (urgent popup), one sound, no repeats.
+      host.notify(title, body, 'https://ffscouter.com/premium', { ...urgentOpts(), repeat: 0 });
+    },
+  };
   const features = { user, chain, research, scout, war, claims, warreport, targets, market, travel, bazaar, ffscouter, alerts, casino, planner, avatars, sync, ...(host.extraFeatures || {}) };
 
   // Settings changed on another device (from the Mentat server).
@@ -224,6 +253,7 @@ function createCore(host) {
       try { f.tick(now); } catch (e) { console.error(e); }
     }
     try { ffsShare.tick(now); } catch (e) { console.error(e); }
+    try { premiumReminder.tick(now); } catch (e) { console.error(e); }
   }, 1000);
 
   // ---- Settings sent to the page (never a key) ----
@@ -394,7 +424,7 @@ function createCore(host) {
 
   return {
     api, features, commands, publicSettings, setSetting, applySynced, flushAll, stop,
-    user, chain, targets, market, travel, bazaar, war, research, scout, ffscouter, alerts, casino, sync, history, cache,
+    user, chain, targets, market, travel, bazaar, war, research, scout, ffscouter, alerts, casino, sync, history, cache, premiumReminder,
   };
 }
 

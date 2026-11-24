@@ -22,7 +22,7 @@ const DEFAULTS = {
     override: {}, learned: {}, lastMethod: '', capacityApi: null,
   },
   market: { watch: {}, watchInterval: 300, payoutPct: 95, bazaar: true, priceSource: 'both' },
-  ffscouter: { keyEnc: '', account: null, acknowledgedAt: 0, stats: {}, intervalHours: 6 },
+  ffscouter: { keyEnc: '', account: null, acknowledgedAt: 0, stats: {}, intervalHours: 6, premiumUntil: 0, premiumReminded: 0 },
   alerts: { rules: [], volume: 0.6 },
   // live: seconds between enemy refreshes while you watch the War tab during a war (0 = off)
   war: { watchId: 0, interval: 30, pinned: [], live: 3 },

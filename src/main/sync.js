@@ -173,6 +173,10 @@ class SyncFeature extends EventEmitter {
   // True once this device has the server's copy of a data set (this session).
   hasPulled(name) { return !!this.pulledRev[name]; }
 
+  // True once this device has checked the server's synced settings (this session): what other
+  // devices did (e.g. already showed a once-only reminder) is known by then.
+  settingsFresh() { return !!this.settingsAt; }
+
   // True while the server collects research and abroad stock instead of this PC.
   covering(now = Date.now()) {
     if (!this.configured()) return false;
@@ -424,6 +428,7 @@ class SyncFeature extends EventEmitter {
       }
       this.store.set('sync.settingsRev', Number(got.rev) || 0);
     }
+    this.settingsAt = Date.now(); // this device has the server's settings (this session)
     if (this.dirty.size) {
       const send = [...this.dirty];
       const units = Object.fromEntries(send.map(u => [u, this.store.get(u) ?? null]));

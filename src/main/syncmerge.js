@@ -22,6 +22,9 @@ const SYNC_UNITS = [
   'planner.items', 'planner.days',
   'war.watchId', 'war.interval', 'war.live', 'war.pinned', 'research.watchId',
   'ffscouter.intervalHours', 'scout.spread',
+  // FFScouter Premium's end (from any device's key check) and the end date already reminded about,
+  // so the 24-hour reminder shows once across all your devices (core.js premiumReminder).
+  'ffscouter.premiumUntil', 'ffscouter.premiumReminded',
   'chatwin.emojis', 'chatwin.onTop', 'chatwin.minimizeToBubble', 'chatwin.compact', 'chatwin.hideInBrowser',
 ];
 const UNIT_SET = new Set(SYNC_UNITS);
@@ -154,7 +157,12 @@ function prunePlan(items, now = Date.now()) {
   return out;
 }
 
+// Dates that only move forward: the later of the two copies wins.
+const LATEST_UNITS = new Set(['ffscouter.premiumUntil', 'ffscouter.premiumReminded']);
+const latest = (a, b) => Math.max(Number(a) || 0, Number(b) || 0);
+
 function joinUnit(unit, local, remote) {
+  if (LATEST_UNITS.has(unit)) return latest(local, remote);
   if (unit === 'planner.items') return mergePlan(local, remote);
   if (unit === 'targets.list' || unit === 'market.watch' || unit === 'travel.learned' || unit === 'travel.override' || unit === 'gamble.log') {
     return { ...(isObj(local) ? local : {}), ...(isObj(remote) ? remote : {}) };
@@ -171,6 +179,7 @@ function joinUnit(unit, local, remote) {
 // A setting another PC changed, applied here. Targets keep this PC's fresher status
 // checks; watched items keep whether this PC already alerted.
 function applyUnit(unit, local, remote) {
+  if (LATEST_UNITS.has(unit)) return latest(local, remote);
   if (unit === 'targets.list' && isObj(remote)) {
     const out = {};
     for (const [id, t] of Object.entries(remote)) {
