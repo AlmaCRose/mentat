@@ -44,6 +44,7 @@ function wrClose() {
 async function wrOpenWar(id, fresh) {
   wrState.warId = id;
   wrState.error = '';
+  wrState.linkError = '';
   if (fresh || !wrState.result || wrState.result.model.war.id !== id) wrState.result = null;
   renderWarReport();
   try {
@@ -78,6 +79,22 @@ async function wrClick(e) {
     const ok = await copyText(wrState.result.parts[Number(p.dataset.wrCopy)]);
     p.textContent = ok ? 'Copied ✓' : 'Copy failed';
     setTimeout(() => { if (p.isConnected) p.textContent = p.dataset.label; }, 2000);
+    return;
+  }
+  const link = e.target.closest('[data-wr-link]');
+  const linkId = link ? Number(link.dataset.wrLink) || (wrState.result && wrState.result.model.war.id) : 0;
+  if (link && linkId) {
+    link.disabled = true;
+    try {
+      const r = await cmd('war.reportLink', linkId);
+      const ok = r && r.url ? await copyText(r.url) : false;
+      wrState.link = { id: linkId, ...r, copied: ok };
+      wrState.linkError = '';
+    } catch (err) {
+      wrState.link = null;
+      wrState.linkError = err.message || String(err);
+    }
+    renderWarReport();
     return;
   }
   const img = e.target.closest('[data-wr-image]');
@@ -133,6 +150,16 @@ function wrCardHtml(m, forImage = false) {
   </div>`;
 }
 
+// After "Copy team link": the link (copied, or to select by hand), and the always-newest link.
+function wrLinkNote(warId) {
+  if (wrState.linkError) return `<div class="note neg">${esc(wrState.linkError)}</div>`;
+  const l = wrState.link;
+  if (!l || l.id !== warId || !l.url) return '';
+  return `<div class="note">${l.copied ? 'Team link copied.' : 'Copy this team link:'} <div class="wr-linkbox" style="user-select:all;word-break:break-all;margin:4px 0;font-family:monospace">${esc(l.url)}</div>
+    ${l.current ? 'Until the war ends it shows us vs them (Comparison); then the full report appears at the same link. ' : l.built ? '' : 'The server is building this report now; the link already works and shows it in about a minute. '}Anyone with the link can open it, no sign-in.
+    <div class="muted small">Always the newest war: <span style="user-select:all">${esc(l.latest || '')}</span></div></div>`;
+}
+
 function renderWarReport() {
   const body = $('#wr-body');
   if (!body || !wrState.open) return;
@@ -152,8 +179,10 @@ function renderWarReport() {
       const won = w.winner && war.own && w.winner === war.own.id;
       return `<tr><td>${wrDate(w.start)}</td><td>vs <b>${esc(w.opponent || '?')}</b></td><td class="num">${wrNum(w.us)} – ${wrNum(w.them)}</td>
         <td>${done ? `<span class="pill ${won ? 'ok' : 'bad'}">${won ? 'Won' : 'Lost'}</span>` : '<span class="pill info">In progress</span>'}</td>
-        <td><button data-wr-war="${w.id}" ${done ? '' : 'disabled'}>${(f.built || []).includes(w.id) ? 'Open report' : 'Build report'}</button></td></tr>`;
-    }).join('')}</table>`}`;
+        <td>${done ? `<button data-wr-war="${w.id}">${(f.built || []).includes(w.id) ? 'Open report' : 'Build report'}</button>`
+    : `<button data-wr-link="${w.id}" title="A link for the team: us vs them now, and the full war report at the same link when the war ends">Copy team link</button>`}</td></tr>`;
+    }).join('')}</table>`}
+      ${wrState.link && !wrState.warId ? wrLinkNote(wrState.link.id) : wrState.linkError && !wrState.warId ? `<div class="note neg">${esc(wrState.linkError)}</div>` : ''}`;
     return;
   }
   const r = wrState.result;
@@ -169,11 +198,13 @@ function renderWarReport() {
         <label class="row"><input type="checkbox" id="wr-spect" ${wrState.spectators ? 'checked' : ''}> List members with 0 hits</label>
         ${parts.map((p, i) => { const label = parts.length > 1 ? `Copy for Discord (${i + 1}/${parts.length})` : 'Copy for Discord'; return `<button class="primary" data-wr-copy="${i}" data-label="${label}" title="${p.length} characters">${label}</button>`; }).join('')}
         ${isWeb ? '' : '<button data-wr-image title="The card below as an image, for pasting into Discord">Copy image</button>'}
+        <button data-wr-link title="A link to this report as a page on the Mentat server: opens at once for anyone, no sign-in">Copy team link</button>
         <button data-wr-rebuild title="Fetch everything again">Rebuild</button>
       </span>
     </div>
     ${parts.length > 1 ? '<div class="note">Discord allows 2,000 characters a message, so the text comes in parts: paste them in order.</div>' : ''}
     ${wrState.error ? `<div class="note neg">${esc(wrState.error)}</div>` : ''}
+    ${wrLinkNote(r.model.war.id)}
     ${wrCardHtml(r.model)}
     <details style="margin-top:10px"><summary>Discord text</summary><pre class="wr-text">${esc(parts.join('\n\n— next message —\n\n'))}</pre></details>`;
 }

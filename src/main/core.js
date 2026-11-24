@@ -123,6 +123,73 @@ function createCore(host) {
   // Profile pictures: free from the profiles Targets fetches anyway, the rest a few a minute.
   const avatars = new AvatarsFeature({ api, store, dataDir });
   targets.on('profile', (id, d) => avatars.put(id, d && d.profile_image));
+  // FFScouter summaries for the team's war report link (its Comparison tab; the user's request,
+  // 2026-11-24). The server has no FFScouter key, so the owner's or an admin's device shares what it
+  // loaded for the researched factions: activity by hour of the week, estimated battle stats and
+  // each member's usual hours. Checked once a minute, sent only when something changed.
+  const ffsShare = {
+    sent: '', at: 0, pauseUntil: 0, busy: false,
+    usual(m) { // busiest 3 hours (TCT) from FFScouter's 96 quarter-hour activity counts
+      if (!m || !Array.isArray(m.act)) return null;
+      const by = Array.from({ length: 24 }, (_, h) => m.act.slice(h * 4, h * 4 + 4).reduce((a, b) => a + (b || 0), 0));
+      const total = by.reduce((a, b) => a + b, 0);
+      if (total < 3) return null;
+      let best = 0, at = 0;
+      for (let h = 0; h < 24; h++) { const v = by[h] + by[(h + 1) % 24] + by[(h + 2) % 24]; if (v > best) { best = v; at = h; } }
+      return [at, (at + 3) % 24, Math.round((best / total) * 100) / 100];
+    },
+    intelTried: new Map(), // faction id -> last background load attempt
+    // FFScouter Premium: load the activity history of each researched faction (theirs and ours) in
+    // the background, so it's there without opening the Research tab (the user's report,
+    // 2026-11-24: the shared report had no FFScouter activity for a new opponent). One faction at a
+    // time, refreshed daily; a failed one waits an hour.
+    loadIntel(now) {
+      const acct = store.get('ffscouter.account') || {};
+      const job = ffscouter.intelJob;
+      if (!acct.premium || (job && job.running)) return;
+      for (const t of research.tracked()) {
+        const rec = research.rec(t.id);
+        if (!rec || !Object.keys(rec.members || {}).length) continue;
+        const have = ffscouter.intel(t.id);
+        if (have && now - have.at < 24 * 3600e3) continue;
+        if (now - (this.intelTried.get(t.id) || 0) < 3600e3) continue;
+        this.intelTried.set(t.id, now);
+        ffscouter.loadIntel(t.id, Object.keys(rec.members).map(Number), !!have).catch(() => {});
+        return;
+      }
+    },
+    tick(now) {
+      if (this.busy || now - this.at < 60e3 || now < this.pauseUntil) return;
+      if (ffscouter.hasKey()) { try { this.loadIntel(now); } catch (e) { console.error(e); } }
+      if (!sync.signedIn() || sync.mode() !== 'server' || !ffscouter.hasKey()) return;
+      this.at = now;
+      const stats = ffscouter.stats();
+      const factions = research.tracked().map(t => research.rec(t.id)).filter(Boolean).map(rec => {
+        const i = ffscouter.intel(rec.id);
+        const ids = Object.keys(rec.members || {});
+        const st = {}, uh = {};
+        for (const id of ids) {
+          // The current estimate, else the latest one in FFScouter's stat history
+          const g = i && i.growth && i.growth[id];
+          if (stats[id] && stats[id].bs) st[id] = stats[id].bs;
+          else if (g && g.last && g.last.bs) st[id] = g.last.bs;
+          const u = i && i.members ? this.usual(i.members[id]) : null;
+          if (u) uh[id] = u;
+        }
+        // intel: the whole FFScouter intel, so the server's intelligence report and member dossiers
+        // match the app's (per-member activity by 15 minutes, estimated-stat growth).
+        return { id: rec.id, days: i ? i.days : 0, at: i ? i.at : 0, week: i && i.faction ? i.faction.week : null, stats: st, uh, intel: i || null };
+      }).filter(f => f.week || Object.keys(f.stats).length);
+      if (!factions.length) return;
+      const sig = JSON.stringify(factions);
+      if (sig === this.sent) return;
+      this.busy = true;
+      sync.req('POST', 'research/ffscouter', { body: { factions } })
+        .then(() => { this.sent = sig; })
+        .catch(e => { this.pauseUntil = Date.now() + (/403|owner and admins|404|not found/i.test(e.message) ? 6 * 3600e3 : 10 * 60e3); })
+        .finally(() => { this.busy = false; });
+    },
+  };
   const features = { user, chain, research, scout, war, claims, warreport, targets, market, travel, bazaar, ffscouter, alerts, casino, planner, avatars, sync, ...(host.extraFeatures || {}) };
 
   // Settings changed on another device (from the Mentat server).
@@ -156,6 +223,7 @@ function createCore(host) {
     for (const f of Object.values(features)) {
       try { f.tick(now); } catch (e) { console.error(e); }
     }
+    try { ffsShare.tick(now); } catch (e) { console.error(e); }
   }, 1000);
 
   // ---- Settings sent to the page (never a key) ----
@@ -230,6 +298,17 @@ function createCore(host) {
     },
     // The report card as an image on the clipboard (desktop: export.js; the web app has none)
     'war.reportImage': html => (host.copyImage ? host.copyImage(String(html || '')) : { unsupported: true }),
+    // A link to the report as a page on the Mentat server, for sharing with the team: it opens at
+    // once with no sign-in or API calls (server/warpage.js). The server builds it with its own key.
+    'war.reportLink': async id => {
+      if (!sync.signedIn()) throw new Error('Team links need the Mentat server: sign in to it first.');
+      try {
+        return await sync.req('GET', `war/report-link?war=${Number(id) || 0}`);
+      } catch (e) {
+        if (/404|not found/i.test(e.message)) throw new Error('Your Mentat server needs an update for team links.');
+        throw e;
+      }
+    },
     'war.claim': (id, on) => claims.set(Number(id), !!on),
     'research.watch': id => research.research(id),
     'research.exportIntel': p => {

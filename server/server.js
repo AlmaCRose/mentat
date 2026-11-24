@@ -53,6 +53,13 @@ const { Members, tornWithKey } = require('./members');
 const { Claims } = require('./claims');
 const { HitQueue } = require('./hitqueue');
 const { EnergyShare } = require('./energy');
+const { WarReportFeature } = require(path.join(LIB, 'features', 'warreport'));
+const warpage = require('./warpage');
+const { buildComparison } = require('./compare');
+const { intelHtml } = require('./intelrun');
+const { buildDossiers } = require('./dossier');
+const { AvatarsFeature } = require(path.join(LIB, 'features', 'avatars'));
+const { SNAP_STATS } = require(path.join(LIB, 'features', 'research'));
 const { Push } = require('./push');
 const { Odds } = require('./odds');
 
@@ -494,6 +501,205 @@ async function run(file) {
   // Members' shared energy (opt-in on the war board; see energy.js).
   const energy = new EnergyShare({ dataDir: cfg.dataDir });
   war.viewing = panel => panel === 'war' && queue.watching().length > 0;
+
+  // Shared war reports (the user's request, 2026-11-24): each built once with the server's key and
+  // served as a ready-made page at a link the team opens without signing in or waiting on Torn's
+  // API (warpage.js). Links come from war/report-link, for people signed in here.
+  const warreport = new WarReportFeature({ api, war, dataDir: cfg.dataDir });
+  const reportSecret = warpage.linkSecret(cfg.dataDir);
+  const reportPath = id => `/war/${id}-${warpage.sign(reportSecret, id)}`;
+  const reportBase = req => cfg.publicUrl || `https://${String(req.headers.host || 'localhost')}`;
+  const latestReportId = () => Math.max(0, ...Object.keys(warreport.store.get('reports') || {}).map(Number));
+  const reportTries = new Map(); // war id -> { at, error, n }
+  const reportBuilding = id => !!(warreport.pending && warreport.pending.has(id));
+  function startReport(id, { auto = false } = {}) {
+    if (!id || warreport.get(id) || reportBuilding(id)) return;
+    const t = reportTries.get(id);
+    if (t && (Date.now() - t.at < 10 * 60e3 || (auto && t.n >= 6))) return;
+    const n = (t ? t.n : 0) + 1;
+    reportTries.set(id, { at: Date.now(), error: '', n });
+    warreport.build(id)
+      .then(() => { reportTries.delete(id); attachComparison(id); log(`War report ${id} built.`); })
+      .catch(e => { reportTries.set(id, { at: Date.now(), error: e.message, n }); log(`War report ${id} failed:`, e.message); });
+  }
+  // When a ranked war ends its report is built on its own, so the link opens at once.
+  // Also: while a ranked war is announced, a fresh pre-war comparison every 10 minutes; the last one
+  // before the start stays as the war's pre-war comparison.
+  let reportCheck = 0;
+  function autoReport(now) {
+    if (now - reportCheck < 60e3) return;
+    reportCheck = now;
+    const r = war.ranked();
+    if (r && r.end && r.end <= now - 120e3 && war.state.own) startReport(r.id, { auto: true });
+    if (r && war.phase(now) === 'upcoming') snapshotPreWar(r, now);
+  }
+  // The Opposition Research Report (the user's request, 2026-11-24): us vs them, the app's own
+  // intelligence report for both factions and a dossier per member, from the server's Oppo Research
+  // records plus what a Mentat device with FFScouter shared (route research/ffscouter; the server
+  // has no FFScouter key). Taken every 10 minutes while a ranked war is announced; the last one
+  // before the start is the war's report. Each war's is a file in <data>/prewar/.
+  const ffsShared = new Store(path.join(cfg.dataDir, 'ffscouter-shared.json'), { factions: {} }, { debounceMs: 5000 });
+  const PRE_DIR = path.join(cfg.dataDir, 'prewar');
+  fs.mkdirSync(PRE_DIR, { recursive: true });
+  const preCache = new Map(); // war id -> object or null
+  function readPre(id) {
+    if (preCache.has(id)) return preCache.get(id);
+    let v = null;
+    try { v = JSON.parse(fs.readFileSync(path.join(PRE_DIR, `${Number(id)}.json`), 'utf8')); } catch (e) { /* none */ }
+    preCache.set(id, v);
+    return v;
+  }
+  function writePre(id, v) {
+    const file = path.join(PRE_DIR, `${Number(id)}.json`);
+    fs.writeFileSync(`${file}.tmp`, JSON.stringify(v));
+    fs.renameSync(`${file}.tmp`, file);
+    preCache.set(id, v);
+    // Keep the 20 newest wars
+    try {
+      const ids = fs.readdirSync(PRE_DIR).map(n => (/^(\d+)\.json$/.exec(n) || [])[1]).filter(Boolean).map(Number).sort((a, b) => b - a);
+      for (const old of ids.slice(20)) { fs.rmSync(path.join(PRE_DIR, `${old}.json`), { force: true }); preCache.delete(old); }
+    } catch (e) { /* next time */ }
+  }
+  // Profile pictures for the dossiers: the app's own picture queue, run here with the server's key
+  // (one /user/{id}?selections=profile every 8 s at the lowest priority; kept 14 days).
+  const avatars = new AvatarsFeature({ api, store: settings, dataDir: cfg.dataDir });
+  const photosOf = () => avatars.snapshot().map;
+
+  const enemyIdOf = r => { const own = war.state.own && war.state.own.id; const e = ((r && r.factions) || []).find(f => f.id !== own); return e ? e.id : 0; };
+  const comparisonFor = (themId, { asOf = 0 } = {}) => {
+    const own = war.state.own && war.state.own.id;
+    const them = themId && research.rec(themId), us = own && research.rec(own);
+    if (!them || !us || !Object.keys(them.members || {}).length) return null;
+    return buildComparison({ them, us, shared: ffsShared.get('factions') || {}, asOf });
+  };
+  // The whole report for the enemy now (or rebuilt for asOf: wars and chains up to then).
+  function oppoFor(themId, { asOf = 0 } = {}) {
+    const own = war.state.own && war.state.own.id;
+    const them = themId && research.rec(themId), us = own && research.rec(own);
+    if (!them || !us || !Object.keys(them.members || {}).length) return null;
+    const shared = ffsShared.get('factions') || {};
+    const comparison = buildComparison({ them, us, shared, asOf });
+    // A rebuilt report must not count the war itself (or anything after it) as history.
+    const cut = rec => (asOf && rec.record ? { ...rec, record: { ...rec.record, wars: (rec.record.wars || []).filter(w => w.end && w.end <= asOf) } } : rec);
+    const intelOf = (rec, other, self) => {
+      try {
+        const s = shared[rec.id] || {};
+        const r = intelHtml({ rec: cut(rec), us: other ? cut(other) : null, stats: s.stats || {}, ffs: s.intel || null, snapStats: SNAP_STATS, self });
+        return { r, dossiers: buildDossiers({ rec: cut(rec), M: r.model, ffs: s.intel || null, asOf: asOf || Date.now() }) };
+      } catch (e) { log('Opposition research report:', e.stack || e.message); return null; }
+    };
+    const T = intelOf(them, us, false), U = intelOf(us, null, true);
+    avatars.want([...Object.keys(them.members), ...Object.keys(us.members)]);
+    return {
+      at: Date.now(), asOf: asOf || 0, rebuilt: !!asOf, enemyId: themId, comparison,
+      intel: { them: T ? { html: T.r.html, wars: T.r.wars, level: T.r.level } : null, us: U ? { html: U.r.html, wars: U.r.wars, level: U.r.level } : null },
+      dossiers: T && U ? { them: T.dossiers, us: U.dossiers } : null,
+    };
+  }
+  function snapshotPreWar(r, now) {
+    const have = readPre(r.id);
+    if (have && !have.rebuilt && now - have.at < 10 * 60e3) return;
+    const o = oppoFor(enemyIdOf(r));
+    if (!o) return;
+    writePre(r.id, o);
+    pagesFor.delete(r.id);
+  }
+  // A war's Opposition Research Report: the last snapshot before it began, else rebuilt for its
+  // start from the research collected by then (only when the server missed the time before it).
+  function preWarFor(id, enemyId, start) {
+    const snap = readPre(id);
+    if (snap && (!start || snap.rebuilt || snap.at <= start)) return snap;
+    if (!start) return null;
+    const o = oppoFor(enemyId, { asOf: start });
+    if (o) writePre(id, o);
+    return o;
+  }
+  // A finished report keeps both comparisons: before the war (in its prewar file) and now.
+  function attachComparison(id) {
+    const all = warreport.store.get('reports') || {};
+    const m = all[id];
+    if (!m) return;
+    const enemyId = m.them && m.them.id;
+    preWarFor(id, enemyId, m.war.start);
+    if (!m.comparison) { const c = comparisonFor(enemyId); if (c) { m.comparison = c; warreport.store.set('reports', all); } }
+  }
+  const pagesFor = new Map(); // war id -> { key, at, html, gz, etag } for the war's pages
+
+  // /war/<id>-<sig>[/members]: the war report, or before/during the war the Opposition Research
+  // Report; /members is the member dossiers of the Opposition Research Report.
+  function serveReport(req, res, which, sig, sub) {
+    const out = (code, html, cache) => {
+      const zipped = /\bgzip\b/.test(req.headers['accept-encoding'] || '');
+      const raw = Buffer.from(html);
+      const body = zipped ? (cache && cache.gz) || zlib.gzipSync(raw) : raw;
+      res.writeHead(code, {
+        'Content-Type': 'text/html; charset=utf-8', 'Content-Length': body.length,
+        // Pictures come from Torn's image servers (the dossiers' photos)
+        'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self' https://*.torn.com; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+        'X-Frame-Options': 'DENY', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'X-Robots-Tag': 'noindex, nofollow',
+        'Cache-Control': cache ? 'no-cache' : 'no-store', ...(cache ? { ETag: cache.etag } : {}),
+        ...(zipped ? { 'Content-Encoding': 'gzip', Vary: 'Accept-Encoding' } : {}),
+      });
+      res.end(req.method === 'HEAD' ? undefined : body);
+    };
+    const cached = (key, make) => {
+      let c = pagesFor.get(`${key}`);
+      if (!c || c.key !== key.k) {
+        const html = make();
+        if (html == null) return null;
+        c = { key: key.k, html, gz: zlib.gzipSync(Buffer.from(html)), etag: `"wr-${crypto.createHash('sha256').update(html).digest('base64url').slice(0, 16)}"` };
+        pagesFor.set(`${key}`, c);
+      }
+      if (req.headers['if-none-match'] === c.etag) { res.writeHead(304, { ETag: c.etag, 'Cache-Control': 'no-cache' }); res.end(); return true; }
+      out(200, c.html, c);
+      return true;
+    };
+    if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405, { Allow: 'GET, HEAD' }); return res.end(); }
+    if (!warpage.sigOk(reportSecret, which, sig)) return out(404, warpage.waitingPage({ error: 'This link is not right. Ask for a new one.' }));
+    const base = `/war/${which}-${sig}`;
+    // "latest": the ranked war announced or running now, else the newest report.
+    const r = war.ranked();
+    const current = r && war.phase() !== 'ended' ? r : null;
+    const id = which === 'latest' ? (r && war.phase() ? r.id : latestReportId()) : Number(which);
+    if (!id) return out(200, warpage.waitingPage({ error: 'There is no war report yet. Mentat makes one when a ranked war ends.' }));
+    const m = warreport.get(id);
+    const isCurrent = !m && current && current.id === id;
+    const started = isCurrent ? current.start <= Date.now() : true;
+    const tenMin = Math.floor(Date.now() / 600e3);
+
+    // The Opposition Research Report for this war (live before it starts, frozen after)
+    const pre = () => {
+      if (isCurrent && !started) { snapshotPreWar(current, Date.now()); return readPre(id); }
+      return preWarFor(id, isCurrent ? enemyIdOf(current) : m && m.them && m.them.id, isCurrent ? current.start : m && m.war.start);
+    };
+    const photoKey = () => Object.keys(photosOf()).length;
+
+    if (sub === 'members') {
+      const p = pre();
+      if (!p || !p.dossiers) return out(200, warpage.waitingPage({ warId: id, error: 'The member dossiers are not ready yet. Mentat is still researching the enemy; try again in a few minutes.' }));
+      return cached({ toString: () => `${id}/members`, k: `${p.at}|${photoKey()}` }, () => warpage.membersPage({ pre: p, war: isCurrent ? current : { id, start: m ? m.war.start : 0 }, photos: photosOf(), back: base, finished: !!m }));
+    }
+    if (isCurrent) {
+      // Before the war: the report as it is now (what gets frozen). During it: the frozen one and the
+      // comparison now, made again every 10 minutes.
+      return cached({ toString: () => `${id}`, k: `${tenMin}|${started}|${(readPre(id) || {}).at || 0}` }, () => {
+        const p = pre();
+        const now = started ? comparisonFor(enemyIdOf(current)) : null;
+        if (!p && !now) return null;
+        return warpage.oppoPage({ pre: p, now, war: current, base });
+      }) || out(200, warpage.waitingPage({ warId: id, error: 'Mentat is still researching the enemy. Try again in a few minutes.' }));
+    }
+    if (!m) {
+      startReport(id);
+      const t = reportTries.get(id);
+      const error = !reportBuilding(id) && t && t.error ? `Mentat couldn't build this report: ${t.error}` : '';
+      return out(200, warpage.waitingPage({ warId: id, error, progress: warreport.state.building === id ? warreport.state.progress : '' }));
+    }
+    if (!m.comparison || !readPre(id)) attachComparison(id); // a report made before its research was in
+    const mm = warreport.get(id);
+    const p = readPre(id);
+    return cached({ toString: () => `${id}`, k: `${mm.builtAt}|${mm.comparison ? mm.comparison.at : 0}|${p ? p.at : 0}` }, () => warpage.reportPage(mm, { pre: p, base }));
+  }
   // Chain leads set the hit speed: the owner, admins, and the positions ticked on the board.
   const positionOf = pid => {
     const m = war.state.ours && war.state.ours.members.find(x => x.id === Number(pid));
@@ -627,6 +833,7 @@ async function run(file) {
     try { activity.flush(); archive.flush(); } catch (e) { /* next time */ }
     queue.flush();
     energy.flush();
+    try { warreport.flush(); ffsShared.flush(); avatars.db.flush(); } catch (e) { /* next time */ }
   };
   const cloud = new CloudBackup(cfg.cloud, cfg.dataDir, log, flushAll);
   if (cfg.cloud.enabled && !cloud.configured()) log('Cloud backup is on in config.json but not set up yet (endpoint, bucket and access keys).');
@@ -642,6 +849,8 @@ async function run(file) {
     for (const f of loops) { try { f.tick(now); } catch (e) { log('Collector error:', e.stack || e.message); } }
     try { queue.tick(now); } catch (e) { log('Hit queue error:', e.stack || e.message); }
     try { claims.tick(now); } catch (e) { log('Dibs error:', e.stack || e.message); }
+    try { avatars.tick(now); } catch (e) { log('Pictures error:', e.message); }
+    if (C.war) { try { autoReport(now); } catch (e) { log('War report error:', e.stack || e.message); } }
     try { cloud.tick(now); } catch (e) { log('Cloud backup error:', e.message); }
     members.tick(now).catch(e => log('Members check error:', e.message));
     if (account) api.setOthers(othersOf(account.id, null));
@@ -724,6 +933,9 @@ async function run(file) {
       // The war board's update check file: its userscript header (managers like Userscripts on
       // iPad/iPhone read updates from a .meta.js), made from the script so it's never out of date.
       if (url.pathname === '/pda/mentat-war.meta.js') return serveWarMeta(req, res, cfg.publicUrl);
+      // Shared war reports: /war/<warId>-<sig> and /war/latest-<sig>.
+      const wr = /^\/war\/(\d{1,12}|latest)-([\w-]{12})(?:\/(members))?\/?$/.exec(url.pathname);
+      if (wr) return serveReport(req, res, wr[1], wr[2], wr[3] || '');
       if (url.pathname === '/download' || url.pathname === '/download/' || url.pathname.startsWith('/downloads/')) return serveDownload(req, res, url.pathname, cfg.downloadsDir);
       return serveFile(req, res, url.pathname, cfg.publicUrl);
     }
@@ -867,6 +1079,82 @@ async function run(file) {
         queue: queue.view(),
       });
     }
+    // Shared war report links (anyone signed in): ?war=<id> gives that war's link and starts
+    // building it if it isn't yet; the "latest" link always shows the newest report.
+    if (route === 'war/report-link' && req.method === 'GET') {
+      const id = Number(url.searchParams.get('war')) || 0;
+      if (id && (!Number.isInteger(id) || id > 1e12)) return send(req, res, 400, { error: 'Which war?' });
+      // The war announced or running now has no report yet: its link shows the Comparison until it ends.
+      const rw = war.ranked();
+      const current = !!(id && rw && rw.id === id && war.phase() !== 'ended');
+      if (id && !current) startReport(id);
+      const base = reportBase(req);
+      const t = id && !current ? reportTries.get(id) : null;
+      return send(req, res, 200, {
+        current,
+        url: id ? `${base}${reportPath(id)}` : null,
+        latest: `${base}/war/latest-${warpage.sign(reportSecret, 'latest')}`,
+        built: id ? !!warreport.get(id) : null, building: id ? reportBuilding(id) : false,
+        error: t && !reportBuilding(id) ? t.error : '',
+        reports: Object.keys(warreport.store.get('reports') || {}).map(Number).sort((a, b) => b - a),
+      });
+    }
+    // FFScouter summaries from a Mentat device (owner or admins), for the Comparison tab: activity
+    // by hour of the week, estimated battle stats and usual hours of researched factions' members.
+    if (route === 'research/ffscouter' && req.method === 'POST') {
+      if (!(who.owner || who.admin || isOwnerPid(who.pid))) return send(req, res, 403, { error: 'Only the server owner and admins share FFScouter data.' });
+      const body = await readBody(req);
+      const list = Array.isArray(body.factions) ? body.factions.slice(0, 10) : [];
+      const all = ffsShared.get('factions') || {};
+      const finite = (v, lo, hi) => { const n = Number(v); return Number.isFinite(n) && n >= lo && n <= hi ? n : null; };
+      let n = 0;
+      for (const f of list) {
+        const id = finite(f && f.id, 1, 1e9);
+        if (!id || !Number.isInteger(id)) continue;
+        const week = Array.isArray(f.week) && f.week.length === 168 ? f.week.map(w => (Array.isArray(w) ? [finite(w[0], 0, 1e7) || 0, finite(w[1], 0, 1e5) || 0] : [0, 0])) : null;
+        const stats = {}, uh = {};
+        for (const [k, v] of Object.entries(f.stats && typeof f.stats === 'object' ? f.stats : {}).slice(0, 250)) { const b = finite(v, 1, 1e15); if (/^\d{1,10}$/.test(k) && b) stats[k] = b; }
+        for (const [k, v] of Object.entries(f.uh && typeof f.uh === 'object' ? f.uh : {}).slice(0, 250)) {
+          if (/^\d{1,10}$/.test(k) && Array.isArray(v) && v.length === 3) { const a = finite(v[0], 0, 23), b = finite(v[1], 0, 23), s = finite(v[2], 0, 1); if (a != null && b != null && s != null) uh[k] = [a, b, s]; }
+        }
+        const prev = all[id] || {};
+        // The device's whole FFScouter intel for the faction (src/main/features/ffscouter.js
+        // loadIntel), for the intelligence report and the dossiers: numbers only, known shapes.
+        const nums = (a, len, hi) => (Array.isArray(a) && a.length === len ? a.map(v => finite(v, 0, hi) || 0) : null);
+        const pairs = (a, len) => (Array.isArray(a) && a.length === len ? a.map(p => (Array.isArray(p) ? [finite(p[0], 0, 1e7) || 0, finite(p[1], 0, 1e6) || 0] : [0, 0])) : null);
+        let intel = null;
+        const fi = f.intel && typeof f.intel === 'object' ? f.intel : null;
+        if (fi) {
+          const members = {}, growth = {};
+          for (const [k, m] of Object.entries(fi.members && typeof fi.members === 'object' ? fi.members : {}).slice(0, 250)) {
+            if (!/^\d{1,10}$/.test(k) || !m) continue;
+            const act = nums(m.act, 96, 1e6), obs = nums(m.obs, 96, 1e6);
+            if (act && obs) members[k] = { act, obs, days: finite(m.days, 0, 400) || 0, activeDays: finite(m.activeDays, 0, 400) || 0 };
+          }
+          const point = p => (p && finite(p.t, 0, 1e14) && finite(p.bs, 1, 1e15) ? { t: Number(p.t), bs: Number(p.bs) } : null);
+          for (const [k, g] of Object.entries(fi.growth && typeof fi.growth === 'object' ? fi.growth : {}).slice(0, 250)) {
+            if (/^\d{1,10}$/.test(k) && g) growth[k] = { first: point(g.first), mid: point(g.mid), last: point(g.last) };
+          }
+          const fac = fi.faction && typeof fi.faction === 'object' ? fi.faction : null;
+          intel = {
+            at: finite(fi.at, 0, 1e14) || Date.now(), days: finite(fi.days, 0, 400) || 0, start: finite(fi.start, 0, 1e14) || 0, end: finite(fi.end, 0, 1e14) || 0,
+            faction: fac ? { slots: pairs(fac.slots, 96) || [], week: pairs(fac.week, 168) || [], memberCount: finite(fac.memberCount, 0, 1000) || 0 } : null,
+            members, growth,
+          };
+        }
+        all[id] = {
+          id, days: finite(f.days, 0, 400) || (week ? prev.days || 0 : 0), week: week || prev.week || null,
+          intel: intel || prev.intel || null,
+          stats: Object.keys(stats).length ? stats : prev.stats || {}, uh: Object.keys(uh).length ? uh : prev.uh || {},
+          at: Math.min(Date.now(), finite(f.at, 0, 1e14) || Date.now()), receivedAt: Date.now(),
+        };
+        n++;
+      }
+      for (const k of Object.keys(all).sort((a, b) => all[b].receivedAt - all[a].receivedAt).slice(12)) delete all[k];
+      ffsShared.set('factions', all);
+      pagesFor.clear();
+      return send(req, res, 200, { ok: true, factions: n });
+    }
     // Energy sharing (opt-in): a member's own reading, or { off: true } to stop and delete it.
     if (route === 'war/energy' && req.method === 'POST') {
       if (!who.pid) return send(req, res, 400, { error: 'Sign in with your API key to share energy.' });
@@ -1009,7 +1297,7 @@ async function run(file) {
   function stop() {
     log('Stopping: saving data.');
     clearInterval(ticker);
-    for (const s of [settings, cache, history.store, history.baz, travel.history, war.db, research.db, scout.db, activity, archive, members, ...memberStores.values()]) { try { s.flush(); } catch (e) { log('Save failed:', e.message); } }
+    for (const s of [settings, cache, history.store, history.baz, travel.history, war.db, research.db, scout.db, activity, archive, members, warreport, ffsShared, avatars.db, ...memberStores.values()]) { try { s.flush(); } catch (e) { log('Save failed:', e.message); } }
     server.close();
     process.exit(0);
   }

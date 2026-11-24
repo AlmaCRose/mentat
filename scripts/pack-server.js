@@ -6,10 +6,10 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..');
 const OUT = path.join(ROOT, 'dist', 'torn-desktop-server');
 const FILES = [
-  'server/server.js', 'server/cloudbackup.js', 'server/members.js', 'server/push.js', 'server/odds.js', 'server/claims.js', 'server/hitqueue.js', 'server/energy.js', 'server/README.md', 'server/torn-desktop-server.service',
+  'server/server.js', 'server/cloudbackup.js', 'server/members.js', 'server/push.js', 'server/odds.js', 'server/claims.js', 'server/hitqueue.js', 'server/energy.js', 'server/warpage.js', 'server/compare.js', 'server/intelrun.js', 'server/dossier.js', 'server/README.md', 'server/torn-desktop-server.service',
   'src/main/store.js', 'src/main/api.js', 'src/main/history.js', 'src/main/restock.js', 'src/main/syncmerge.js',
   'src/main/features/war.js', 'src/main/features/research.js', 'src/main/features/travel.js',
-  'src/main/features/market.js', 'src/main/features/bazaar.js', 'src/main/features/scout.js',
+  'src/main/features/market.js', 'src/main/features/bazaar.js', 'src/main/features/scout.js', 'src/main/features/warreport.js', 'src/main/features/avatars.js',
   'src/main/activity.js', 'src/main/warchive.js',
 ];
 

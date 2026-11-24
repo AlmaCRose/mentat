@@ -45,30 +45,54 @@ function usualHours(a) {
   return { from: at, to: (at + 3) % 24, share: best / total };
 }
 
-// Average members active per hour of the week (Mon..Sun × 0..23 TCT).
-// factionHours counts one sample per member per check, so active/samples is the share of
-// members online; times the member count gives how many were online on average.
-function hourGrid(rec) {
+// Average members active per hour of the week (index = UTC getDay() * 24 + hour, TCT), the
+// user's rule (2026-11-24): FFScouter's activity scanner first (Premium; up to 52 days, far more
+// than Mentat's own checks), and Mentat's own checks only for hours FFScouter has nothing for.
+// FFScouter: active players per 15-minute reading, averaged. Mentat: factionHours counts one
+// sample per member per check, so active/samples is the share online; times members = how many.
+// Next, Mentat's activity history (rec.observed: the server's checks of these players, scouting
+// included, so it often has weeks before research starts), then the research checks themselves.
+function weekActivity(rec, ffsI) {
+  const week = ffsI && ffsI.faction && Array.isArray(ffsI.faction.week) ? ffsI.faction.week : null;
+  const ow = rec.observed && rec.observed.week;
   const f = rec.factionHours;
   const n = Math.max(1, Object.keys(rec.members).length);
-  return RS_DAY_INDEX.map(d => Array.from({ length: 24 }, (_, h) => {
-    const i = d * 24 + h;
-    return f.samples[i] ? { avg: (f.active[i] / f.samples[i]) * n, samples: f.samples[i] / n, actions: f.actions[i] } : null;
-  }));
+  return Array.from({ length: 168 }, (_, i) => {
+    const w = week && week[i];
+    if (w && w[1] > 0) return { avg: w[0] / w[1], src: 'ffs', n: w[1] };
+    if (ow && ow.obs && ow.obs[i]) return { avg: (ow.act[i] / ow.obs[i]) * n, src: 'hist', n: ow.obs[i] / n, days: rec.observed.days };
+    if (f && f.samples[i]) return { avg: (f.active[i] / f.samples[i]) * n, src: 'own', n: f.samples[i] / n };
+    return null;
+  });
 }
 
-function heatmap(rec, label, maxAvg) {
-  const g = hourGrid(rec);
+// Where a faction's activity map came from, for the note under it.
+function activitySources(cells, ffsI) {
+  const ffsN = cells.filter(c => c && c.src === 'ffs').length;
+  const hist = cells.filter(c => c && c.src === 'hist');
+  const own = cells.filter(c => c && c.src === 'own').length;
+  const parts = [];
+  if (ffsN) parts.push(`FFScouter ${ffsI.days} days (${ffsN}/168 hours)`);
+  if (hist.length) parts.push(`${ffsN ? 'Mentat\'s activity history filled ' : `Mentat's activity history, ${hist[0].days} day${hist[0].days === 1 ? '' : 's'}: `}${hist.length} hour${hist.length === 1 ? '' : 's'}`);
+  if (own) parts.push(`${ffsN || hist.length ? 'research checks filled ' : 'research checks: '}${own} hour${own === 1 ? '' : 's'}`);
+  const empty = 168 - ffsN - hist.length - own;
+  if (empty) parts.push(`${empty} with no data`);
+  return parts.join(' · ');
+}
+
+function heatmap(cells, label, maxAvg, ffsI) {
+  // Dotted: filled from Mentat because FFScouter had nothing for that hour
+  const hasF = cells.some(c => c && c.src === 'ffs');
   const cell = (v, d, h) => {
-    if (!v) return `<td class="hm-empty" title="${RS_DAYS[d]} ${String(h).padStart(2, '0')}:00 TCT: no samples yet"></td>`;
+    if (!v) return `<td class="hm-empty" title="${RS_DAYS[d]} ${String(h).padStart(2, '0')}:00 TCT: no data yet"></td>`;
     const pct = maxAvg ? Math.min(1, v.avg / maxAvg) : 0;
-    return `<td style="background:color-mix(in srgb, var(--blue) ${Math.round(6 + pct * 84)}%, var(--bg-2))" title="${esc(label)} · ${RS_DAYS[d]} ${String(h).padStart(2, '0')}:00 TCT: ${v.avg.toFixed(1)} online on average (${Math.round(v.samples)} checks)">${v.avg >= 0.5 ? Math.round(v.avg) : ''}</td>`;
+    const from = v.src === 'ffs' ? `FFScouter, ${v.n} readings over ${ffsI ? ffsI.days : '?'} days` : v.src === 'hist' ? `Mentat's activity history, ${v.days} days` : `research checks, ${Math.round(v.n)} checks`;
+    return `<td class="${hasF && v.src !== 'ffs' ? 'hm-own' : ''}" style="background:color-mix(in srgb, var(--blue) ${Math.round(6 + pct * 84)}%, var(--bg-2))" title="${esc(label)} · ${RS_DAYS[d]} ${String(h).padStart(2, '0')}:00 TCT: ${v.avg.toFixed(1)} active on average (${from})">${v.avg >= 0.5 ? Math.round(v.avg) : ''}</td>`;
   };
   return `<table class="heatmap"><tr><th></th>${Array.from({ length: 24 }, (_, h) => `<th>${h % 3 === 0 ? String(h).padStart(2, '0') : ''}</th>`).join('')}</tr>
-    ${g.map((row, d) => `<tr><th>${RS_DAYS[d]}</th>${row.map((v, h) => cell(v, d, h)).join('')}</tr>`).join('')}</table>`;
+    ${RS_DAY_INDEX.map((d, r) => `<tr><th>${RS_DAYS[r]}</th>${Array.from({ length: 24 }, (_, h) => cell(cells[d * 24 + h], r, h)).join('')}</tr>`).join('')}</table>`;
 }
 
-const avgAt = (rec, i) => (rec.factionHours.samples[i] ? (rec.factionHours.active[i] / rec.factionHours.samples[i]) * Math.max(1, Object.keys(rec.members).length) : null);
 const hourLabel = i => `${RS_DAYS[RS_DAY_INDEX.indexOf(Math.floor(i / 24))]} ${String(i % 24).padStart(2, '0')}:00`;
 
 // Stat spread: counts per range, both factions, side by side.
@@ -143,6 +167,9 @@ function renderResearch() {
     el.innerHTML = `${head}<div class="empty">No research running. It starts by itself as soon as your faction's next war is announced (it collects in the background until the war is over). ${R.canPick === false ? 'The server owner can also pick other factions to research.' : 'You can also research any faction by ID above.'}</div>`;
     return;
   }
+  // Activity comes from FFScouter for both sides: load theirs, then ours.
+  autoIntel(them, ffs);
+  if (us) autoIntel(us, ffs);
   const v = researchView({ R, sel, them, us, ffs, stats, mine, board: prefs.get('research.board', 'them'), sortKey: prefs.get('research.sort', 'stats'), dir: prefs.get('research.dir', -1) });
   el.innerHTML = top + head + v.html;
   drawOnlineChart($('#rs-online'), v);
@@ -184,11 +211,15 @@ function researchView({ R, sel, them, us, ffs, stats, mine, board, sortKey, dir,
   const top5 = l => { const s = [...l].sort((a, c) => c - a).slice(0, 5); return s.length ? sum(s) / s.length : null; };
   const tl = bucket(tm.map(m => m.level), LVL_BUCKETS), ul = bucket(um.map(m => m.level), LVL_BUCKETS);
   const lvlRows = LVL_BUCKETS.map(([, label], i) => ({ label, them: tl[i], us: ul[i] }));
-  const bandsVsMe = mine ? tm.reduce((acc, m) => { const v = bsOf(m); if (!v) return acc; const r = v / mine; acc[r > 1.1 ? 'stronger' : r >= 0.9 ? 'even' : 'weaker']++; return acc; }, { weaker: 0, even: 0, stronger: 0 }) : null;
 
   // ---- Activity ----
-  const tAvg = Array.from({ length: 168 }, (_, i) => avgAt(them, i));
-  const uAvg = Array.from({ length: 168 }, (_, i) => (us ? avgAt(us, i) : null));
+  const ffsT = (ffs.intel || {})[them.id] || null;
+  const ffsU = us ? (ffs.intel || {})[us.id] || null : null;
+  const tCells = weekActivity(them, ffsT);
+  const uCells = us ? weekActivity(us, ffsU) : [];
+  const tAvg = tCells.map(c => (c ? c.avg : null));
+  const uAvg = Array.from({ length: 168 }, (_, i) => (uCells[i] ? uCells[i].avg : null));
+  const job = ffs.intelJob && ffs.intelJob.running && [them.id, us && us.id].includes(ffs.intelJob.fid) ? ffs.intelJob : null;
   const maxAvg = Math.max(1, ...tAvg.filter(v => v != null), ...uAvg.filter(v => v != null));
   const ranked = tAvg.map((v, i) => ({ i, v })).filter(x => x.v != null);
   const peak = [...ranked].sort((a, c) => c.v - a.v).slice(0, 5);
@@ -256,17 +287,17 @@ function researchView({ R, sel, them, us, ffs, stats, mine, board, sortKey, dir,
             <tr><td>Total</td><td class="num">${compact(sum(tBs))}</td><td class="num">${compact(sum(uBs))}</td></tr>
             <tr><td>Median member</td><td class="num">${compact(median(tBs))}</td><td class="num">${compact(median(uBs))}</td></tr>
             <tr><td>Top 5 average</td><td class="num">${compact(top5(tBs))}</td><td class="num">${compact(top5(uBs))}</td></tr>
-            <tr><td>Estimates available</td><td class="num">${tBs.length}/${tm.length}</td><td class="num">${uBs.length}/${um.length}</td></tr></table>
-          ${bandsVsMe ? `<div class="note">Against your own ${compact(mine)}: <span class="est est-b2">${bandsVsMe.weaker} weaker</span> <span class="est est-b0">${bandsVsMe.even} within 10%</span> <span class="est est-h2">${bandsVsMe.stronger} stronger</span></div>` : ''}`
+            <tr><td>Estimates available</td><td class="num">${tBs.length}/${tm.length}</td><td class="num">${uBs.length}/${um.length}</td></tr></table>`
           : '<div class="note">Add your FFScouter key in Settings to compare estimated battle stats.</div>'}
         <h3>Levels</h3>${butterfly(lvlRows, tName, uName)}</div>
     </div>
 
-    <h3>Activity (online by hour, TCT)</h3>
-    <div class="note" style="margin-top:0">Average members online in each hour of the week, from checks every 5 minutes plus their last-action times. Fills in over a week; darker = more online. Hover a cell for details.</div>
+    <h3>Activity (active by hour, TCT)</h3>
+    <div class="note" style="margin-top:0">Average members active in each hour of the week, from FFScouter's activity scanner (FFScouter Premium, up to 52 days). Hours FFScouter has no data for come from Mentat's activity history (its checks of every faction around your rank, so often weeks before a war), then from the research checks (dotted outline). Darker = more active. Hover a cell for details.
+      ${!ffs.hasKey ? ' <b>Add your FFScouter key in Settings to use FFScouter activity.</b>' : !(ffs.account || {}).premium ? ' <b>FFScouter activity needs FFScouter Premium; showing Mentat\'s own checks.</b>' : job ? ` <b>Loading FFScouter activity ${job.done}/${job.total}…</b>` : ''}</div>
     <div class="cols2">
-      <div><div class="chart-title">${esc(tName)}</div>${heatmap(them, tName, maxAvg)}</div>
-      <div><div class="chart-title">${esc(uName)}</div>${us ? heatmap(us, uName, maxAvg) : '<div class="muted small">Your faction loads with the research.</div>'}</div>
+      <div><div class="chart-title">${esc(tName)} <span class="muted small">${activitySources(tCells, ffsT)}</span></div>${heatmap(tCells, tName, maxAvg, ffsT)}</div>
+      <div><div class="chart-title">${esc(uName)}${us ? ` <span class="muted small">${activitySources(uCells, ffsU)}</span>` : ''}</div>${us ? heatmap(uCells, uName, maxAvg, ffsU) : '<div class="muted small">Your faction loads with the research.</div>'}</div>
     </div>
     <div class="grid3" style="margin:8px 0">
       <div class="stat"><div class="k">Their peak hours</div><div class="small">${peak.map(x => `${hourLabel(x.i)} <b>${x.v.toFixed(1)}</b>`).join('<br>') || 'collecting…'}</div></div>
@@ -322,7 +353,7 @@ function researchView({ R, sel, them, us, ffs, stats, mine, board, sortKey, dir,
     respect: [b.respect, ub.respect], rank: [b.rank, ub.rank], bestChain: [b.bestChain, ub.bestChain], wl: [wl(them), wl(us)],
     chains30: [chains30(them).length, chains30(us).length], longest30: [Math.max(0, ...chains30(them).map(c => c.length)), Math.max(0, ...chains30(us).map(c => c.length))],
     bsTotal: [sum(tBs), sum(uBs)], bsMedian: [median(tBs), median(uBs)], bsTop5: [top5(tBs), top5(uBs)], bsKnown: [tBs.length, uBs.length], hasStats: !!ffs.hasKey,
-    bandsVsMe, mine, peak, quiet, edge, inactive, onlineNow: last ? last[1] + last[2] : null,
+    lvlMedian: [median(tm.map(m => m.level)), median(um.map(m => m.level))], mine, peak, quiet, edge, inactive, onlineNow: last ? last[1] + last[2] : null,
     xanMedian: [median(col(tP, 'xanax')), median(col(uP, 'xanax'))], eloMedian: [median(col(tP, 'elo')), median(col(uP, 'elo'))],
     rwMedian: [median(col(tP, 'rwHits')), median(col(uP, 'rwHits'))], revivers: [revivers(tP), revivers(uP)],
     xanPace: [median(paceCol(tP, 'xanax')), median(paceCol(uP, 'xanax'))], threats,
@@ -348,8 +379,9 @@ function reportModel(c) {
 function autoIntel(rec, ffs) {
   const acct = ffs.account || {};
   const have = (ffs.intel || {})[rec.id];
-  const job = ffs.intelJob && ffs.intelJob.fid === rec.id ? ffs.intelJob : null;
-  if (ffs.hasKey && acct.premium && !have && !(job && job.running) && !rsAutoIntel.has(rec.id) && Object.keys(rec.members).length) {
+  // One FFScouter job at a time: while another faction loads, try again on a later redraw.
+  const busy = ffs.intelJob && ffs.intelJob.running;
+  if (rec && ffs.hasKey && acct.premium && !have && !busy && !rsAutoIntel.has(rec.id) && Object.keys(rec.members).length) {
     rsAutoIntel.add(rec.id);
     cmd('ffscouter.intel', rec.id, Object.keys(rec.members).map(Number), false).catch(() => {});
   }
@@ -519,7 +551,6 @@ function overviewCard(m) {
   const pair = (a, c, f = compact) => `<span class="ov-them">${a == null ? '–' : f(a)}</span><span class="ov-vs">vs</span><span class="ov-us">${c == null ? '–' : f(c)}</span>`;
   const tile = (k, v) => `<div class="ov-tile"><div class="ov-k">${k}</div><div class="ov-v">${v}</div></div>`;
   const hrs = (list, fmt) => (list.length ? list.slice(0, 3).map(fmt).join('<br>') : '<span class="muted">collecting…</span>');
-  const b = m.bandsVsMe;
   return `<div class="ov">
     <div class="ov-head">
       <div><div class="ov-title">Oppo Research: ${esc(m.tName)}${m.tag ? ` [${esc(m.tag)}]` : ''}</div>
@@ -534,7 +565,7 @@ function overviewCard(m) {
       ${tile('Respect', pair(m.respect[0], m.respect[1]))}
     </div>
     <div class="ov-grid5">
-      ${tile(`Vs your ${m.mine ? compact(m.mine) : ''} stats`, b ? `<span class="est est-b2">${b.weaker} weaker</span> <span class="est est-b0">${b.even} even</span> <span class="est est-h2">${b.stronger} stronger</span>` : '–')}
+      ${tile('Median level', pair(m.lvlMedian[0], m.lvlMedian[1], num))}
       ${tile('Last 20 ranked wars', pair(m.wl[0], m.wl[1], x => x))}
       ${tile('Chains, last 30 days', pair(m.chains30[0], m.chains30[1], num))}
       ${tile('Longest chain, 30 days', pair(m.longest30[0], m.longest30[1], num))}

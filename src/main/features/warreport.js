@@ -72,15 +72,22 @@ function buildModel({ report, ownId, chains = [], attacks = null, history = null
   // From your chains during the war
   const agg = new Map(); // id -> summed counts
   let longest = null, bonusList = [];
+  const chainList = [];
   for (const c of chains) {
     const d = c.details || {};
     if (!longest || (d.chain || 0) > longest.chain) longest = { id: c.id, chain: d.chain || 0, respect: d.respect || 0, start: s2ms(c.start), end: s2ms(c.end) };
     for (const b of c.bonuses || []) bonusList.push({ id: b.attacker_id, chain: b.chain, respect: b.respect });
+    chainList.push({
+      id: c.id, chain: d.chain || 0, respect: Math.round((d.respect || 0) * 100) / 100, start: s2ms(c.start), end: s2ms(c.end),
+      war: d.war || 0, members: d.members || (c.attackers || []).length, best: d.best || 0,
+      bonuses: (c.bonuses || []).map(b => ({ id: b.attacker_id, name: nameOf(b.attacker_id), chain: b.chain, respect: b.respect })),
+    });
     for (const a of c.attackers || []) {
       const t = a.attacks || {}, rs = a.respect || {};
-      const o = agg.get(a.id) || { id: a.id, best: 0, mug: 0, hospitalize: 0, assists: 0, retaliations: 0, overseas: 0, draws: 0, escapes: 0, losses: 0, bonuses: 0, total: 0 };
+      const o = agg.get(a.id) || { id: a.id, best: 0, respect: 0, mug: 0, hospitalize: 0, leave: 0, war: 0, assists: 0, retaliations: 0, overseas: 0, draws: 0, escapes: 0, losses: 0, bonuses: 0, total: 0 };
       o.best = Math.max(o.best, rs.best || 0);
-      for (const k of ['mug', 'hospitalize', 'assists', 'retaliations', 'overseas', 'draws', 'escapes', 'losses', 'bonuses', 'total']) o[k] += t[k] || 0;
+      o.respect += rs.total || 0;
+      for (const k of ['mug', 'hospitalize', 'leave', 'war', 'assists', 'retaliations', 'overseas', 'draws', 'escapes', 'losses', 'bonuses', 'total']) o[k] += t[k] || 0;
       agg.set(a.id, o);
     }
   }
@@ -137,7 +144,21 @@ function buildModel({ report, ownId, chains = [], attacks = null, history = null
     const bags = new Map();
     for (const a of won) { const o = bags.get(a.defender.id) || { id: a.defender.id, name: a.defender.name, n: 0 }; o.n++; bags.set(a.defender.id, o); }
     const bag = [...bags.values()].sort((a, b) => b.n - a.n)[0];
-    attackStats = { outgoing: out.length, won: won.length, incoming: inc.length, enemyHospitalised: won.filter(a => a.result === 'Hospitalized').length, punchingBag: bag ? { id: bag.id, name: bag.name, hits: bag.n } : null };
+    // War hits per hour of the war: [our successful hits, their attacks on us]
+    const hours = Math.max(1, Math.ceil((end - start) / 3600e3));
+    const byHour = Array.from({ length: Math.min(hours, 24 * 14) }, () => [0, 0]);
+    const slot = a => Math.floor((s2ms(a.started) - start) / 3600e3);
+    for (const a of won) { const h = slot(a); if (byHour[h]) byHour[h][0]++; }
+    for (const a of inc) { const h = slot(a); if (byHour[h]) byHour[h][1]++; }
+    const results = {};
+    for (const a of out) results[a.result || 'None'] = (results[a.result || 'None'] || 0) + 1;
+    attackStats = {
+      outgoing: out.length, won: won.length, incoming: inc.length, enemyHospitalised: won.filter(a => a.result === 'Hospitalized').length,
+      incomingWon: inc.filter(a => SUCCESS.has(a.result)).length,
+      punchingBag: bag ? { id: bag.id, name: bag.name, hits: bag.n } : null,
+      bags: [...bags.values()].sort((a, b) => b.n - a.n).slice(0, 10).map(b => ({ id: b.id, name: b.name, hits: b.n })),
+      byHour, results,
+    };
   }
 
   // Score history from Mentat (lead changes, biggest lead, comeback)
@@ -152,7 +173,12 @@ function buildModel({ report, ownId, chains = [], attacks = null, history = null
       if (d > bestLead) { bestLead = d; bestAt = t; }
       if (d < worst) { worst = d; worstAt = t; }
     }
-    timeline = { leadChanges: changes, biggestLead: bestLead, biggestLeadAt: bestAt, biggestDeficit: -worst, biggestDeficitAt: worstAt, samples: history.points.length };
+    // The score line itself, thinned to at most ~400 points (the last one always kept), for the
+    // shared report page's chart.
+    const pts2 = history.points.filter(p => !end || p[0] <= end + 120e3);
+    const step = Math.max(1, Math.ceil(pts2.length / 400));
+    const line = pts2.filter((p, i) => i % step === 0 || i === pts2.length - 1).map(p => [p[0], p[1], p[2]]);
+    timeline = { leadChanges: changes, biggestLead: bestLead, biggestLeadAt: bestAt, biggestDeficit: -worst, biggestDeficitAt: worstAt, samples: history.points.length, line };
   }
 
   const won = r.winner === us.id;
@@ -164,7 +190,10 @@ function buildModel({ report, ownId, chains = [], attacks = null, history = null
     spectators: us.members.filter(m => m.attacks === 0).map(m => ({ id: m.id, name: m.name, level: m.level })),
     hitters: hitters.length, members: us.members.length,
     enemyTop: [...them.members].sort((a, b) => b.score - a.score).slice(0, 3),
+    enemyMembers: [...them.members].sort((a, b) => b.score - a.score || b.attacks - a.attacks),
     longestChain: longest, chainCount: chains.length,
+    chains: chainList.sort((a, b) => a.start - b.start),
+    chainStats: chainRows.map(o => ({ ...o, name: nameOf(o.id), respect: Math.round(o.respect * 100) / 100, best: Math.round(o.best * 100) / 100 })),
     attackStats, timeline, accolades,
     sources: { chains: chains.length, attacks: Array.isArray(attacks) ? attacks.length : null, history: !!timeline },
   };
@@ -261,9 +290,23 @@ class WarReportFeature extends EventEmitter {
     return wars;
   }
 
-  // The report for one war: kept, or built now. fresh = build again.
-  async build(warId, { fresh = false } = {}) {
+  // A kept report, or null.
+  get(warId) {
+    return (this.store.get('reports') || {})[Number(warId)] || null;
+  }
+
+  // The report for one war: kept, or built now. fresh = build again. Asking again while it's
+  // being built waits for that build instead of starting another.
+  build(warId, opts = {}) {
     const id = Number(warId);
+    this.pending = this.pending || new Map();
+    if (this.pending.has(id)) return this.pending.get(id);
+    const p = this.buildNow(id, opts).finally(() => this.pending.delete(id));
+    this.pending.set(id, p);
+    return p;
+  }
+
+  async buildNow(id, { fresh = false } = {}) {
     if (!Number.isInteger(id) || id <= 0) throw new Error('Which war?');
     const kept = (this.store.get('reports') || {})[id];
     if (kept && !fresh) return kept;

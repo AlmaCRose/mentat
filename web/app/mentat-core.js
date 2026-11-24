@@ -1,4 +1,4 @@
-// Mentat 0.1.29: the core for web browsers. Built by scripts/pack-web.js from src/main; don't edit.
+// Mentat 0.1.32: the core for web browsers. Built by scripts/pack-web.js from src/main; don't edit.
 (function () {
 'use strict';
 // Browser stand-ins for the Node and Electron modules Mentat's core uses (bundled into
@@ -299,6 +299,73 @@ function createCore(host) {
   // Profile pictures: free from the profiles Targets fetches anyway, the rest a few a minute.
   const avatars = new AvatarsFeature({ api, store, dataDir });
   targets.on('profile', (id, d) => avatars.put(id, d && d.profile_image));
+  // FFScouter summaries for the team's war report link (its Comparison tab; the user's request,
+  // 2026-11-24). The server has no FFScouter key, so the owner's or an admin's device shares what it
+  // loaded for the researched factions: activity by hour of the week, estimated battle stats and
+  // each member's usual hours. Checked once a minute, sent only when something changed.
+  const ffsShare = {
+    sent: '', at: 0, pauseUntil: 0, busy: false,
+    usual(m) { // busiest 3 hours (TCT) from FFScouter's 96 quarter-hour activity counts
+      if (!m || !Array.isArray(m.act)) return null;
+      const by = Array.from({ length: 24 }, (_, h) => m.act.slice(h * 4, h * 4 + 4).reduce((a, b) => a + (b || 0), 0));
+      const total = by.reduce((a, b) => a + b, 0);
+      if (total < 3) return null;
+      let best = 0, at = 0;
+      for (let h = 0; h < 24; h++) { const v = by[h] + by[(h + 1) % 24] + by[(h + 2) % 24]; if (v > best) { best = v; at = h; } }
+      return [at, (at + 3) % 24, Math.round((best / total) * 100) / 100];
+    },
+    intelTried: new Map(), // faction id -> last background load attempt
+    // FFScouter Premium: load the activity history of each researched faction (theirs and ours) in
+    // the background, so it's there without opening the Research tab (the user's report,
+    // 2026-11-24: the shared report had no FFScouter activity for a new opponent). One faction at a
+    // time, refreshed daily; a failed one waits an hour.
+    loadIntel(now) {
+      const acct = store.get('ffscouter.account') || {};
+      const job = ffscouter.intelJob;
+      if (!acct.premium || (job && job.running)) return;
+      for (const t of research.tracked()) {
+        const rec = research.rec(t.id);
+        if (!rec || !Object.keys(rec.members || {}).length) continue;
+        const have = ffscouter.intel(t.id);
+        if (have && now - have.at < 24 * 3600e3) continue;
+        if (now - (this.intelTried.get(t.id) || 0) < 3600e3) continue;
+        this.intelTried.set(t.id, now);
+        ffscouter.loadIntel(t.id, Object.keys(rec.members).map(Number), !!have).catch(() => {});
+        return;
+      }
+    },
+    tick(now) {
+      if (this.busy || now - this.at < 60e3 || now < this.pauseUntil) return;
+      if (ffscouter.hasKey()) { try { this.loadIntel(now); } catch (e) { console.error(e); } }
+      if (!sync.signedIn() || sync.mode() !== 'server' || !ffscouter.hasKey()) return;
+      this.at = now;
+      const stats = ffscouter.stats();
+      const factions = research.tracked().map(t => research.rec(t.id)).filter(Boolean).map(rec => {
+        const i = ffscouter.intel(rec.id);
+        const ids = Object.keys(rec.members || {});
+        const st = {}, uh = {};
+        for (const id of ids) {
+          // The current estimate, else the latest one in FFScouter's stat history
+          const g = i && i.growth && i.growth[id];
+          if (stats[id] && stats[id].bs) st[id] = stats[id].bs;
+          else if (g && g.last && g.last.bs) st[id] = g.last.bs;
+          const u = i && i.members ? this.usual(i.members[id]) : null;
+          if (u) uh[id] = u;
+        }
+        // intel: the whole FFScouter intel, so the server's intelligence report and member dossiers
+        // match the app's (per-member activity by 15 minutes, estimated-stat growth).
+        return { id: rec.id, days: i ? i.days : 0, at: i ? i.at : 0, week: i && i.faction ? i.faction.week : null, stats: st, uh, intel: i || null };
+      }).filter(f => f.week || Object.keys(f.stats).length);
+      if (!factions.length) return;
+      const sig = JSON.stringify(factions);
+      if (sig === this.sent) return;
+      this.busy = true;
+      sync.req('POST', 'research/ffscouter', { body: { factions } })
+        .then(() => { this.sent = sig; })
+        .catch(e => { this.pauseUntil = Date.now() + (/403|owner and admins|404|not found/i.test(e.message) ? 6 * 3600e3 : 10 * 60e3); })
+        .finally(() => { this.busy = false; });
+    },
+  };
   const features = { user, chain, research, scout, war, claims, warreport, targets, market, travel, bazaar, ffscouter, alerts, casino, planner, avatars, sync, ...(host.extraFeatures || {}) };
 
   // Settings changed on another device (from the Mentat server).
@@ -332,6 +399,7 @@ function createCore(host) {
     for (const f of Object.values(features)) {
       try { f.tick(now); } catch (e) { console.error(e); }
     }
+    try { ffsShare.tick(now); } catch (e) { console.error(e); }
   }, 1000);
 
   // ---- Settings sent to the page (never a key) ----
@@ -406,6 +474,17 @@ function createCore(host) {
     },
     // The report card as an image on the clipboard (desktop: export.js; the web app has none)
     'war.reportImage': html => (host.copyImage ? host.copyImage(String(html || '')) : { unsupported: true }),
+    // A link to the report as a page on the Mentat server, for sharing with the team: it opens at
+    // once with no sign-in or API calls (server/warpage.js). The server builds it with its own key.
+    'war.reportLink': async id => {
+      if (!sync.signedIn()) throw new Error('Team links need the Mentat server: sign in to it first.');
+      try {
+        return await sync.req('GET', `war/report-link?war=${Number(id) || 0}`);
+      } catch (e) {
+        if (/404|not found/i.test(e.message)) throw new Error('Your Mentat server needs an update for team links.');
+        throw e;
+      }
+    },
     'war.claim': (id, on) => claims.set(Number(id), !!on),
     'research.watch': id => research.research(id),
     'research.exportIntel': p => {
@@ -3521,8 +3600,30 @@ class FFScouterFeature extends EventEmitter {
     }
   }
 
+  // Premium can start or lapse after the key was saved: ask FFScouter again every 6 hours (one
+  // check-key call), so activity history isn't skipped on an old answer (the user's report,
+  // 2026-11-24: the app still said "not Premium" a week after a check).
+  async checkAccount() {
+    this.accountBusy = true;
+    try {
+      const info = await call('check-key', { key: this.getKey() });
+      const was = this.store.get('ffscouter.account') || {};
+      this.store.set('ffscouter.account', { ...was, premium: !!info.is_premium, premiumUntil: (info.premium_expires_at || 0) * 1000, policyUpdate: !!info.policy_update_required, checkedAt: Date.now() });
+      this.emit('state');
+    } catch (e) {
+      if (e.code in KEY_ERRORS) this.handleError(e);
+      // Otherwise try again at the next 6-hour mark
+      const was = this.store.get('ffscouter.account') || {};
+      this.store.set('ffscouter.account', { ...was, checkedAt: Date.now() });
+    } finally {
+      this.accountBusy = false;
+    }
+  }
+
   tick(now) {
     if (!this.hasKey() || this.inFlight || now < this.pausedUntil) return;
+    const acct = this.store.get('ffscouter.account') || {};
+    if (!this.accountBusy && now - (acct.checkedAt || 0) > 6 * 3600e3) { this.checkAccount(); return; }
     const every = Math.max(1, Number(this.store.get('ffscouter.intervalHours')) || 6) * 3600 * 1000;
     const s = this.stats();
     const due = this.getTargetIds().filter(id => !s[id] || now - (s[id].fetchedAt || 0) >= every);
@@ -6297,15 +6398,22 @@ function buildModel({ report, ownId, chains = [], attacks = null, history = null
   // From your chains during the war
   const agg = new Map(); // id -> summed counts
   let longest = null, bonusList = [];
+  const chainList = [];
   for (const c of chains) {
     const d = c.details || {};
     if (!longest || (d.chain || 0) > longest.chain) longest = { id: c.id, chain: d.chain || 0, respect: d.respect || 0, start: s2ms(c.start), end: s2ms(c.end) };
     for (const b of c.bonuses || []) bonusList.push({ id: b.attacker_id, chain: b.chain, respect: b.respect });
+    chainList.push({
+      id: c.id, chain: d.chain || 0, respect: Math.round((d.respect || 0) * 100) / 100, start: s2ms(c.start), end: s2ms(c.end),
+      war: d.war || 0, members: d.members || (c.attackers || []).length, best: d.best || 0,
+      bonuses: (c.bonuses || []).map(b => ({ id: b.attacker_id, name: nameOf(b.attacker_id), chain: b.chain, respect: b.respect })),
+    });
     for (const a of c.attackers || []) {
       const t = a.attacks || {}, rs = a.respect || {};
-      const o = agg.get(a.id) || { id: a.id, best: 0, mug: 0, hospitalize: 0, assists: 0, retaliations: 0, overseas: 0, draws: 0, escapes: 0, losses: 0, bonuses: 0, total: 0 };
+      const o = agg.get(a.id) || { id: a.id, best: 0, respect: 0, mug: 0, hospitalize: 0, leave: 0, war: 0, assists: 0, retaliations: 0, overseas: 0, draws: 0, escapes: 0, losses: 0, bonuses: 0, total: 0 };
       o.best = Math.max(o.best, rs.best || 0);
-      for (const k of ['mug', 'hospitalize', 'assists', 'retaliations', 'overseas', 'draws', 'escapes', 'losses', 'bonuses', 'total']) o[k] += t[k] || 0;
+      o.respect += rs.total || 0;
+      for (const k of ['mug', 'hospitalize', 'leave', 'war', 'assists', 'retaliations', 'overseas', 'draws', 'escapes', 'losses', 'bonuses', 'total']) o[k] += t[k] || 0;
       agg.set(a.id, o);
     }
   }
@@ -6362,7 +6470,21 @@ function buildModel({ report, ownId, chains = [], attacks = null, history = null
     const bags = new Map();
     for (const a of won) { const o = bags.get(a.defender.id) || { id: a.defender.id, name: a.defender.name, n: 0 }; o.n++; bags.set(a.defender.id, o); }
     const bag = [...bags.values()].sort((a, b) => b.n - a.n)[0];
-    attackStats = { outgoing: out.length, won: won.length, incoming: inc.length, enemyHospitalised: won.filter(a => a.result === 'Hospitalized').length, punchingBag: bag ? { id: bag.id, name: bag.name, hits: bag.n } : null };
+    // War hits per hour of the war: [our successful hits, their attacks on us]
+    const hours = Math.max(1, Math.ceil((end - start) / 3600e3));
+    const byHour = Array.from({ length: Math.min(hours, 24 * 14) }, () => [0, 0]);
+    const slot = a => Math.floor((s2ms(a.started) - start) / 3600e3);
+    for (const a of won) { const h = slot(a); if (byHour[h]) byHour[h][0]++; }
+    for (const a of inc) { const h = slot(a); if (byHour[h]) byHour[h][1]++; }
+    const results = {};
+    for (const a of out) results[a.result || 'None'] = (results[a.result || 'None'] || 0) + 1;
+    attackStats = {
+      outgoing: out.length, won: won.length, incoming: inc.length, enemyHospitalised: won.filter(a => a.result === 'Hospitalized').length,
+      incomingWon: inc.filter(a => SUCCESS.has(a.result)).length,
+      punchingBag: bag ? { id: bag.id, name: bag.name, hits: bag.n } : null,
+      bags: [...bags.values()].sort((a, b) => b.n - a.n).slice(0, 10).map(b => ({ id: b.id, name: b.name, hits: b.n })),
+      byHour, results,
+    };
   }
 
   // Score history from Mentat (lead changes, biggest lead, comeback)
@@ -6377,7 +6499,12 @@ function buildModel({ report, ownId, chains = [], attacks = null, history = null
       if (d > bestLead) { bestLead = d; bestAt = t; }
       if (d < worst) { worst = d; worstAt = t; }
     }
-    timeline = { leadChanges: changes, biggestLead: bestLead, biggestLeadAt: bestAt, biggestDeficit: -worst, biggestDeficitAt: worstAt, samples: history.points.length };
+    // The score line itself, thinned to at most ~400 points (the last one always kept), for the
+    // shared report page's chart.
+    const pts2 = history.points.filter(p => !end || p[0] <= end + 120e3);
+    const step = Math.max(1, Math.ceil(pts2.length / 400));
+    const line = pts2.filter((p, i) => i % step === 0 || i === pts2.length - 1).map(p => [p[0], p[1], p[2]]);
+    timeline = { leadChanges: changes, biggestLead: bestLead, biggestLeadAt: bestAt, biggestDeficit: -worst, biggestDeficitAt: worstAt, samples: history.points.length, line };
   }
 
   const won = r.winner === us.id;
@@ -6389,7 +6516,10 @@ function buildModel({ report, ownId, chains = [], attacks = null, history = null
     spectators: us.members.filter(m => m.attacks === 0).map(m => ({ id: m.id, name: m.name, level: m.level })),
     hitters: hitters.length, members: us.members.length,
     enemyTop: [...them.members].sort((a, b) => b.score - a.score).slice(0, 3),
+    enemyMembers: [...them.members].sort((a, b) => b.score - a.score || b.attacks - a.attacks),
     longestChain: longest, chainCount: chains.length,
+    chains: chainList.sort((a, b) => a.start - b.start),
+    chainStats: chainRows.map(o => ({ ...o, name: nameOf(o.id), respect: Math.round(o.respect * 100) / 100, best: Math.round(o.best * 100) / 100 })),
     attackStats, timeline, accolades,
     sources: { chains: chains.length, attacks: Array.isArray(attacks) ? attacks.length : null, history: !!timeline },
   };
@@ -6486,9 +6616,23 @@ class WarReportFeature extends EventEmitter {
     return wars;
   }
 
-  // The report for one war: kept, or built now. fresh = build again.
-  async build(warId, { fresh = false } = {}) {
+  // A kept report, or null.
+  get(warId) {
+    return (this.store.get('reports') || {})[Number(warId)] || null;
+  }
+
+  // The report for one war: kept, or built now. fresh = build again. Asking again while it's
+  // being built waits for that build instead of starting another.
+  build(warId, opts = {}) {
     const id = Number(warId);
+    this.pending = this.pending || new Map();
+    if (this.pending.has(id)) return this.pending.get(id);
+    const p = this.buildNow(id, opts).finally(() => this.pending.delete(id));
+    this.pending.set(id, p);
+    return p;
+  }
+
+  async buildNow(id, { fresh = false } = {}) {
     if (!Number.isInteger(id) || id <= 0) throw new Error('Which war?');
     const kept = (this.store.get('reports') || {})[id];
     if (kept && !fresh) return kept;
@@ -6566,5 +6710,5 @@ function load(id) {
   DEFS[id].call(module.exports, module, module.exports, req);
   return module.exports;
 }
-window.Mentat = { version: "0.1.29", load: SHIMS.load, persistNow: SHIMS.persistNow, require: load, Buffer };
+window.Mentat = { version: "0.1.32", load: SHIMS.load, persistNow: SHIMS.persistNow, require: load, Buffer };
 })();

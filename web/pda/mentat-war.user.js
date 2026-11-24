@@ -293,6 +293,7 @@
     if (!x) return '';
     if (x.ff === null && x.bs === null) return ' · <span class="small">FF ?</span>';
     // Colours as in Mentat's Targets tab (src/ui/app.js): under 2 green, under 2.75 amber, else red.
+    // Kept this way on purpose to match Wtfight, so players aren't confused (the user's call, 2026-11-24).
     const ff = x.ff !== null ? Number(x.ff) : null;
     const cls = ff === null ? '' : ff < 2 ? 'ok' : ff < 2.75 ? 'warn' : 'bad';
     const tip = `Fair fight ${ff !== null ? ff.toFixed(2) : '?'} (FFScouter): higher = tougher fight, more respect.${x.bsHuman ? ` Estimated battle stats ${x.bsHuman}.` : ''}`;

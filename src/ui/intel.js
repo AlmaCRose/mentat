@@ -85,7 +85,9 @@ function irModel(c) {
   if (obs && obs.days) sources.push({ key: 'server', label: 'Your server\'s checks', days: obs.days, from: obs.from, to: obs.to, members: obs.members, week: obs.week, kind: 'server' });
   if (ffs && ffs.days) sources.push({ key: 'ffs', label: 'FFScouter scanner (Premium)', days: ffs.days, from: irDate(ffs.start), to: irDate(ffs.end), members: ffs.members, faction: ffs.faction, kind: 'ffs' });
   const pref = c.source && sources.find(s => s.key === c.source);
-  const act = pref || [...sources].sort((a, b) => b.days - a.days)[0] || null;
+  // FFScouter first when it's loaded (the user's rule, 2026-11-24: Mentat's own checks haven't run
+  // long enough); the picker can still switch to the server's checks.
+  const act = pref || sources.find(s => s.key === 'ffs') || [...sources].sort((a, b) => b.days - a.days)[0] || null;
   const blocksOf = (src, id) => {
     const m = src && src.members && src.members[id];
     if (!m) return null;
@@ -321,14 +323,16 @@ const irTable = (id, head, rows, mode, filter = true) => `${filter && mode !== '
   <div class="ir-wrap"><table class="ir-t" id="${id}"><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table></div>`;
 const irHeat = v => (v == null ? 'class="ir-hm-empty"' : `style="background:rgba(59,130,246,${(0.08 + Math.min(1, v) * 0.85).toFixed(2)})"`);
 
-function irSlotsSvg(fa, w = 1000, h = 190) {
+// Drawn at about the size it's shown and scaled evenly (it used to stretch a 1000-wide drawing to
+// fit, which squashed the labels; the user's report, 2026-11-24).
+function irSlotsSvg(fa, w = 640, h = 200) {
   const pts = fa.slots.map((v, s) => [s, v]).filter(p => p[1] != null);
   if (pts.length < 2) return '<div class="ir-note">Not enough observations yet.</div>';
   const max = Math.max(...pts.map(p => p[1])) * 1.1 || 1;
   const x = s => 40 + (s / 95) * (w - 50), y = v => h - 24 - (v / max) * (h - 40);
   const grid = [0, 0.25, 0.5, 0.75, 1].map(f => `<line x1="40" x2="${w - 10}" y1="${y(max * f)}" y2="${y(max * f)}" class="ir-grid"/><text x="34" y="${y(max * f) + 4}" class="ir-axis" text-anchor="end">${(max * f).toFixed(1)}</text>`).join('');
   const xs = [0, 16, 32, 48, 64, 80].map(s => `<text x="${x(s)}" y="${h - 6}" class="ir-axis" text-anchor="middle">${irSlotTime(s)}</text>`).join('');
-  return `<svg viewBox="0 0 ${w} ${h}" class="ir-svg" preserveAspectRatio="none">${grid}${xs}<polyline class="ir-line" fill="none" points="${pts.map(p => `${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join(' ')}"/></svg>`;
+  return `<svg viewBox="0 0 ${w} ${h}" class="ir-svg" role="img" aria-label="Average members active by 15-minute slot">${grid}${xs}<polyline class="ir-line" fill="none" points="${pts.map(p => `${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join(' ')}"/></svg>`;
 }
 
 function irBody(M, mode) {
@@ -385,8 +389,15 @@ function irBody(M, mode) {
     return `<div class="ir-tiles">${tile('Hours played / week (faction)', irF(f('hours'), 0))}${tile('Last 2 weeks', irF(f('hoursRecent'), 0))}${tile('Xanax / week', irF(f('xan'), 0))}${tile('Refills / week', irF(f('refills'), 0))}${tile('Energy drinks / week', irF(f('cans'), 0))}${tile('Members measured', `${ms.length} / ${M.rosterSize}`)}</div>`;
   })();
 
-  const commitHead = [irTh('Player', 'text'), ...M.commitWars.flatMap(w => [irTh(`Xanax · ${esc(w.opp)}`), irTh('Refills'), irTh('Cans'), irTh('Hours on')])].join('');
-  const commitRows = M.members.filter(m => m.commit).map(m => `<tr><td>${nm(m)}</td>${M.commitWars.map(w => { const c = m.commit[w.id] || {}; return `${irTd(c.xan, c.xan == null ? '–' : c.xan)}${irTd(c.refills, c.refills == null ? '–' : c.refills)}${irTd(c.cans, c.cans == null ? '–' : c.cans)}${irTd(c.hours, irF(c.hours))}`; }).join('')}</tr>`).join('');
+  // Averages per war over the last 3 (the user's request, 2026-11-24: one set of columns instead of
+  // four per war). Each figure averages the wars that member was measured in.
+  const commitHead = [irTh('Player', 'text'), irTh('Wars', 'num', `Of the last ${M.commitWars.length} ranked wars, how many this member was measured in`), irTh('Xanax / war'), irTh('Refills / war'), irTh('Cans / war'), irTh('Hours on / war'), irTh('RW hits / war')].join('');
+  const commitRows = M.members.filter(m => m.commit).map(m => {
+    const list = M.commitWars.map(w => m.commit[w.id]).filter(Boolean);
+    const avg = k => irMean(list.map(c => c[k]).filter(v => v != null));
+    const a = { xan: avg('xan'), refills: avg('refills'), cans: avg('cans'), hours: avg('hours'), rwhits: avg('rwhits') };
+    return `<tr><td>${nm(m)}</td>${irTd(list.length, `${list.length} / ${M.commitWars.length}`)}${irTd(a.xan, irF(a.xan))}${irTd(a.refills, irF(a.refills))}${irTd(a.cans, irF(a.cans))}${irTd(a.hours, irF(a.hours))}${irTd(a.rwhits, irF(a.rwhits))}</tr>`;
+  }).join('');
 
   const actSecs = M.activity.filter(Boolean).map(a => `
     <h3>${esc(a.label)} · ${a.days} day${a.days === 1 ? '' : 's'} (${esc(a.from)} to ${esc(a.to)})</h3>
@@ -424,7 +435,7 @@ function irBody(M, mode) {
     irTable('ir-chains', [irTh('Player', 'text'), irTh('Chains'), irTh('Sat out'), irTh('Hits'), irTh('War hits'), irTh('Assists'), irTh('Retals'), irTh('Abroad'), irTh('Losses'), irTh('Escapes'), irTh('Hosp %'), irTh('Leave %'), irTh('Mug %'), irTh('Respect / hit'), irTh('Best hit')].join(''), chainRows, mode), 'ir-break') : ''}
   ${momRows ? sec('Momentum', 'How much each member actually plays and uses, from Torn\'s daily stat snapshots weekly over the last 10 weeks (time played, Xanax, refills, energy drinks, stat enhancers). Estimated battle-stat growth is from FFScouter\'s stat history.',
     `${momFaction}${irTable('ir-mom', [irTh('Player', 'text'), irTh('Est. stats'), irTh('Est. growth 10 wk'), irTh('Est. growth 4 wk'), irTh('Hours / week'), irTh('Hours / week (last 2)'), irTh('Trend', 'num'), irTh('Xanax / wk'), irTh('Refills / wk'), irTh('Cans / wk'), irTh('SEs / wk'), irTh('Attacks won / wk'), irTh('RW hits / wk'), irTh('Active streak'), irTh('Weeks')].join(''), momRows, mode)}`, 'ir-break') : ''}
-  ${commitRows ? sec('Commitment during recent wars', 'Used between the day before each war started and the day after it ended (daily snapshots, so it can include a little before or after the war).', irTable('ir-commit', commitHead, commitRows, mode)) : ''}
+  ${commitRows ? sec('Commitment during recent wars', `Average per war over the last ${M.commitWars.length} ranked wars (${M.commitWars.map(w => `vs ${esc(w.opp)}`).join(', ')}). Each war counts what was used between the day before it started and the day after it ended (daily snapshots, so it can include a little before or after the war).`, irTable('ir-commit', commitHead, commitRows, mode)) : ''}
   ${actSecs ? sec('Activity intelligence', 'Share of 15-minute slots in which each member was seen active. "Your server" counts last-action times from its own checks; FFScouter uses its scanner. Neither proves someone was offline.', actSecs, 'ir-break') : ''}
   ${keyThreats.length && keyThreats.some(m => m.activity) ? sec(L.keyAct, `${L.keyActSub}: share of observed 15-minute slots active in each 2-hour block (TCT), from ${esc(M.activityLabel)}.`, threatHm) : ''}
   ${prior ? sec('Joined from elsewhere', 'Current members with ranked-war history in other factions (from every war report your server has archived).', irTable('ir-prior', [irTh('Player', 'text'), irTh('Days here'), irTh('Est. stats'), irTh('Previous wars', 'text'), irTh('Avg hits there')].join(''), prior, mode)) : ''}
@@ -462,8 +473,8 @@ const IR_DOC_CSS = `
   .r-heavy{background:#fde2e2;color:#991b1b}.r-core{background:#e0ecff;color:#1e40af}.r-surge{background:#fff1d6;color:#92400e}.r-reg{background:#e6f4ea;color:#166534}.r-new{background:#ede9fe;color:#5b21b6}.r-low{background:#eef1f5;color:#4b5563}
   .ir-res.win{color:#166534;font-weight:700}.ir-res.loss{color:#991b1b;font-weight:700}
   .ir-callout{background:#f4e7ea;border-left:4px solid #9b1c31;padding:8px 12px;margin-top:8px}
-  .ir-cols{display:grid;grid-template-columns:minmax(300px,1fr) 2fr;gap:16px;align-items:start}.ir-small{width:auto}
-  .ir-svg{width:100%;height:190px}.ir-grid{stroke:#e4e8ee}.ir-axis{font-size:11px;fill:#6b7280}.ir-line{stroke:#2563eb;stroke-width:2}
+  .ir-cols{display:grid;grid-template-columns:auto minmax(0,1fr);gap:16px;align-items:start}.ir-cols>*{min-width:0}.ir-small{width:auto}.ir-small td,.ir-small th{white-space:nowrap}
+  .ir-svg{display:block;width:100%;height:auto;max-height:260px}.ir-grid{stroke:#e4e8ee}.ir-axis{font-size:11px;fill:#6b7280}.ir-line{stroke:#2563eb;stroke-width:2}
   .ir-chart-title{font-size:12px;font-weight:600;margin:8px 0 4px;color:#374151}
   table.ir-hm{border-collapse:collapse;font-size:10px}.ir-hm th{font-weight:600;color:#6b7280;padding:1px 3px}.ir-hm td{width:30px;height:20px;text-align:center;border:1px solid #fff}
   .ir-hm-empty{background:#f3f4f6}.ir-hmt td{text-align:center}
