@@ -193,13 +193,15 @@ function inboundCands(M, country, landAt) {
 
 // Selling abroad: shops buy back what they sell. Black Market pays its current price,
 // every other shop 75% of its price (Torn wiki, Travel).
+// Suitcases can't be sold abroad (the user, 2026-11-25), so they never count as an outbound sale.
+function cantSellAbroad(name) { return /suitcase/i.test(name || ''); }
 function isBlackMarket(id, countryName) {
   const it = CATALOG.items[id];
   if (it && Array.isArray(it[5]) && it[5].some(s => s[0] === countryName && s[1] === 'Black Market')) return true;
   return itemType(id) === 'Drug';
 }
 function outboundCands(M, country) {
-  return country.items.filter(i => i.cost > 0).map(i => {
+  return country.items.filter(i => i.cost > 0 && !cantSellAbroad(i.name || (CATALOG.items[i.id] || [])[0])).map(i => {
     const bm = isBlackMarket(i.id, country.name);
     const sellAbroad = bm ? i.cost : i.cost * 0.75;
     const buy = M.buyHome(i.id);
@@ -812,7 +814,7 @@ function renderSell(body, M) {
   tvSortRows(top, SELL_COLS, ss);
   const unchecked = rows.filter(r => r.buySource !== 'market').slice(0, 25).map(r => r.id);
   body.innerHTML = `
-    <div class="note" style="margin-top:0">Foreign shops buy back what they sell: the Black Market pays its current price, other shops pay 75% of theirs. These are the items that sell abroad for more than they cost at home.</div>
+    <div class="note" style="margin-top:0">Foreign shops buy back what they sell: the Black Market pays its current price, other shops pay 75% of theirs. These are the items that sell abroad for more than they cost at home. Suitcases are left out: they can't be sold abroad.</div>
     <div class="toolbar"><button data-tlive="${unchecked.join(',')}" ${unchecked.length ? '' : 'disabled'}>Check live home prices (${unchecked.length})</button>
       <span class="muted small">${rows.length > top.length ? `the ${top.length} most profitable of ${rows.length}` : `${rows.length} items`}</span>
       <span class="spacer"></span>${tvSortBar('sell', SELL_COLS, ss)}</div>

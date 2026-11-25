@@ -188,6 +188,7 @@ function showPanel(entry) {
   if (name === 'alerts') renderAlerts();
   if (name === 'casino') renderCasino();
   if (name === 'planner') renderPlanner();
+  if (name === 'mugger') renderMugger();
   if (name === 'war') renderWar();
   if (name === 'research') renderResearch();
   if (name === 'faction') renderFaction();
@@ -1364,6 +1365,7 @@ document.addEventListener('focusout', () => setTimeout(() => {
 let lastCatalogAt = 0;
 const RENDER = {
   user: () => { renderOverview(); renderSafe('planner', renderPlanner); renderTargets(); }, // Abroad: where you are
+  mugger: () => renderSafe('mugger', renderMugger),
   chain: () => { renderChain(); renderSafe('war', renderWar); },
   targets: renderTargets,
   travel: () => { renderSafe('travel', renderTravel); renderSafe('planner', renderPlanner); },
@@ -1381,7 +1383,7 @@ const RENDER = {
     renderItemModal();
   },
   bazaar: () => loadBazaar().then(() => { renderSafe('market', renderMarket); renderSafe('travel', renderTravel); renderItemModal(); }),
-  ffscouter: () => { renderTargets(); renderFFSAccount(); renderSafe('war', renderWar); renderSafe('research', renderResearch); renderSafe('faction', renderFaction); },
+  ffscouter: () => { renderTargets(); renderFFSAccount(); renderSafe('mugger', renderMugger); renderSafe('war', renderWar); renderSafe('research', renderResearch); renderSafe('faction', renderFaction); },
   research: () => { renderSafe('research', renderResearch); renderSafe('faction', renderFaction); },
   scout: () => renderSafe('research', renderResearch),
   alerts: () => { renderSafe('alerts', renderAlerts); refreshRestockAlerts(); },

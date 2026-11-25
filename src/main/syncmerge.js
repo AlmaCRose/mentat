@@ -38,8 +38,9 @@ function unitFor(p) {
 
 // Collected data that can be pulled from (and uploaded to) a sync server.
 // 'scout' is pull-only: the server's scouting view (it never takes a PC's copy).
-const DATASETS = ['research', 'war', 'travel', 'prices', 'bazaar', 'scout'];
-const PULL_ONLY = new Set(['scout']);
+// mugger: Mugger's market database (features/muggerdb.js), collected by the server; apps only read it.
+const DATASETS = ['research', 'war', 'travel', 'prices', 'bazaar', 'scout', 'mugger'];
+const PULL_ONLY = new Set(['scout', 'mugger']);
 
 const isObj = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 

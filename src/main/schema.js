@@ -98,10 +98,10 @@ const SETTABLE = {
   'chatwin.onTop': bool, 'chatwin.minimizeToBubble': bool, 'chatwin.compact': bool, 'chatwin.hideInBrowser': bool,
 };
 // Per-tab layout: alignment and width of each tab's content (Settings → Appearance).
-const TABS = ['overview', 'chain', 'research', 'faction', 'war', 'targets', 'travel', 'market', 'planner', 'casino', 'alerts', 'settings'];
+const TABS = ['overview', 'chain', 'research', 'faction', 'war', 'targets', 'mugger', 'travel', 'market', 'planner', 'casino', 'alerts', 'settings'];
 const TAB_LABELS = {
   overview: 'Overview', chain: 'Chain', targets: 'Targets', faction: 'My Faction', war: 'War', research: 'Oppo Research',
-  market: 'Market', travel: 'Travel', planner: 'Planner', casino: 'Casino', alerts: 'Alerts', settings: 'Settings',
+  mugger: 'Mugger', market: 'Market', travel: 'Travel', planner: 'Planner', casino: 'Casino', alerts: 'Alerts', settings: 'Settings',
   'targets:list': 'Targets', 'targets:abroad': 'Abroad',
   'research:overview': 'Research', 'research:report': 'War report', 'research:scout': 'Scouting',
   'travel:timed': 'Timed trips', 'travel:plan': 'Leave now', 'travel:items': 'Abroad items', 'travel:sell': 'Sell abroad', 'travel:flights': 'Flights & settings',
@@ -110,7 +110,7 @@ const TAB_LABELS = {
 };
 const TAB_LAYOUT_DEFAULTS = {
   overview: { align: 'center', width: 'narrow' }, chain: { align: 'center', width: 'narrow' },
-  research: { align: 'center', width: 'wide' }, faction: { align: 'center', width: 'wide' }, war: { align: 'center', width: 'medium' }, targets: { align: 'center', width: 'narrow' },
+  research: { align: 'center', width: 'wide' }, faction: { align: 'center', width: 'wide' }, war: { align: 'center', width: 'medium' }, targets: { align: 'center', width: 'narrow' }, mugger: { align: 'center', width: 'full' },
   travel: { align: 'center', width: 'full' }, market: { align: 'center', width: 'full' }, planner: { align: 'center', width: 'wide' }, casino: { align: 'center', width: 'wide' },
   alerts: { align: 'center', width: 'medium' }, settings: { align: 'center', width: 'narrow' },
 };
@@ -143,6 +143,18 @@ SETTABLE['casino.auto'] = bool;
 // which reminders already went off on this device (not synced).
 DEFAULTS.planner = { items: {}, days: 3, fired: {} };
 SETTABLE['planner.days'] = num(1, 60);
+// Mugger (features/mugger.js): the country (auto = your trip's), the cheapest abroad item that counts,
+// how many traders to check during a trip, its share of your API calls per minute, your Masterful
+// Looting level ('auto' = from your merits) and your weapon's Plunder bonus (%). This device only.
+DEFAULTS.mugger = { location: 'auto', minCost: 100000, pool: 60, rate: 20, here: 1, market: 5, looting: 'auto', plunder: 0 };
+SETTABLE['mugger.location'] = v => typeof v === 'string' && /^(auto|Mexico|Cayman Islands|Canada|Hawaii|United Kingdom|Argentina|Switzerland|Japan|China|UAE|South Africa)$/.test(v);
+SETTABLE['mugger.looting'] = v => v === 'auto' || (Number.isInteger(v) && v >= 0 && v <= 10);
+SETTABLE['mugger.plunder'] = v => v === 0 || (Number.isInteger(v) && v >= 20 && v <= 49);
+SETTABLE['mugger.minCost'] = v => [50000, 100000, 250000, 500000, 1000000].includes(v);
+SETTABLE['mugger.pool'] = v => [20, 40, 60, 100, 150].includes(v);
+SETTABLE['mugger.rate'] = v => [10, 20, 30, 45].includes(v);
+SETTABLE['mugger.here'] = v => [1, 2, 3].includes(v); // minutes between checks of players in your country
+SETTABLE['mugger.market'] = v => [2, 5, 10].includes(v); // minutes between their item market checks
 for (const t of TABS) {
   SETTABLE[`ui.tabLayout.${t}.align`] = oneOf('left', 'center', 'right');
   SETTABLE[`ui.tabLayout.${t}.width`] = oneOf('narrow', 'medium', 'wide', 'full');

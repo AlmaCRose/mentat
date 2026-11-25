@@ -12,6 +12,7 @@ const SETUP_TAB_NOTES = {
   overview: 'Your bars, cooldowns, travel and events at a glance',
   chain: 'Chain timer, with alerts before it drops',
   targets: 'Your target list: who is out of hospital',
+  mugger: 'Mug targets abroad: traders near you, their cash on hand, the mug take and the fight',
   faction: "Your faction's members, activity and war record",
   war: 'Ranked wars live: the score and enemies coming out',
   research: 'Oppo research on enemy factions, war reports, scouting',

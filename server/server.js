@@ -41,7 +41,7 @@ const { TornApi } = require(path.join(LIB, 'api'));
 const { PriceHistory } = require(path.join(LIB, 'history'));
 const { WarFeature } = require(path.join(LIB, 'features', 'war'));
 const { ResearchFeature } = require(path.join(LIB, 'features', 'research'));
-const { TravelFeature } = require(path.join(LIB, 'features', 'travel'));
+const { TravelFeature, COUNTRIES } = require(path.join(LIB, 'features', 'travel'));
 const { MarketFeature } = require(path.join(LIB, 'features', 'market'));
 const { BazaarFeature } = require(path.join(LIB, 'features', 'bazaar'));
 const { ScoutFeature } = require(path.join(LIB, 'features', 'scout'));
@@ -59,6 +59,7 @@ const { buildComparison } = require('./compare');
 const { intelHtml } = require('./intelrun');
 const { buildDossiers } = require('./dossier');
 const { AvatarsFeature } = require(path.join(LIB, 'features', 'avatars'));
+const { MuggerDb, rankTraders, scores, traderInfo, linked } = require(path.join(LIB, 'features', 'muggerdb'));
 const { SNAP_STATS } = require(path.join(LIB, 'features', 'research'));
 const { Push } = require('./push');
 const { Odds } = require('./odds');
@@ -80,11 +81,15 @@ const log = (...a) => console.log(new Date().toISOString(), ...a);
 // the logo from src/assets. Read-only, no directory listings, nothing outside those folders.
 const WEB_DIR = path.join(__dirname, '..', 'web');
 const APP_DIR = path.join(WEB_DIR, 'app'); // the web app's own files (mentat-core.js, host.js, …)
-// War board routes that Torn's pages may call directly (see corsOrigins).
-const CORS_ROUTES = /^(login|me|logout|war\/(board|queue|claims|energy))$/;
-function serveWarMeta(req, res, publicUrl) {
+// Userscript routes that Torn's pages may call directly (see corsOrigins): the war board's and Mugger's.
+const CORS_ROUTES = /^(login|me|logout|war\/(board|queue|claims|energy)|mugger\/traders)$/;
+// The Mentat userscripts in web/pda (mentat-war, mentat-mugger, …): their update check files and versions.
+const scriptFile = name => path.join(WEB_DIR, 'pda', `${name}.user.js`);
+// A userscript's .meta.js: just its header (managers like Userscripts on iPad/iPhone read updates from
+// it), made from the script so it's never out of date.
+function serveScriptMeta(req, res, name, publicUrl) {
   let text;
-  try { text = fs.readFileSync(WAR_SCRIPT, 'utf8'); } catch (e) { res.writeHead(404); return res.end(); }
+  try { text = fs.readFileSync(scriptFile(name), 'utf8'); } catch (e) { res.writeHead(404); return res.end(); }
   const m = /\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/.exec(text);
   let body = m ? `${m[0]}\n` : '';
   if (publicUrl) body = body.split('https://mentat.example.com').join(publicUrl).split('mentat.example.com').join(new URL(publicUrl).host);
@@ -92,19 +97,18 @@ function serveWarMeta(req, res, publicUrl) {
   res.writeHead(m ? 200 : 404, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-cache', 'Content-Length': buf.length, 'X-Content-Type-Options': 'nosniff' });
   res.end(req.method === 'HEAD' ? undefined : buf);
 }
-// The war board script's @version, so boards can say when there's an update (re-read when the
-// file changes).
-const WAR_SCRIPT = path.join(WEB_DIR, 'pda', 'mentat-war.user.js');
-let warScript = { mtime: 0, version: '' };
-function warScriptVersion() {
+// A userscript's @version, so it can say when there's an update (re-read when the file changes).
+const scriptVersions = new Map(); // name -> { mtime, version }
+function scriptVersion(name) {
   try {
-    const st = fs.statSync(WAR_SCRIPT);
-    if (st.mtimeMs !== warScript.mtime) {
-      const m = /^\/\/ @version\s+([\d.]+)/m.exec(fs.readFileSync(WAR_SCRIPT, 'utf8'));
-      warScript = { mtime: st.mtimeMs, version: m ? m[1] : '' };
+    const st = fs.statSync(scriptFile(name));
+    const had = scriptVersions.get(name);
+    if (!had || had.mtime !== st.mtimeMs) {
+      const m = /^\/\/ @version\s+([\d.]+)/m.exec(fs.readFileSync(scriptFile(name), 'utf8'));
+      scriptVersions.set(name, { mtime: st.mtimeMs, version: m ? m[1] : '' });
     }
-  } catch (e) { /* no script here */ }
-  return warScript.version;
+    return scriptVersions.get(name).version;
+  } catch (e) { return ''; }
 }
 const UI_DIR = path.join(__dirname, '..', 'src', 'ui'); // the tools page, shared with the Windows app
 // The web app talks to this server, Torn's API and the same services as the Windows app.
@@ -297,7 +301,7 @@ function loadConfig(file) {
     maxPerMinute: Math.min(80, Math.max(5, Number(c.maxPerMinute) || 30)),
     scoutPerMinute: Math.min(60, Math.max(2, Number(c.scoutPerMinute) || 20)),
     activityKeepDays: Math.min(730, Math.max(30, Number(c.activityKeepDays) || 180)),
-    collect: { research: true, war: true, travel: true, prices: true, bazaar: true, scout: true, ...(c.collect || {}) },
+    collect: { research: true, war: true, travel: true, prices: true, bazaar: true, scout: true, mugger: true, ...(c.collect || {}) },
     // Who may sign in: factionId (default: the server key's faction), adminIds (default: the key's player).
     access: { ...(c.access || {}) },
     // The app's installer and update files (outside the data folder, so backups stay small).
@@ -476,6 +480,11 @@ async function run(file) {
   const bazaar = new BazaarFeature({ store: settings, history });
   market.bazaar = bazaar;
   const travel = new TravelFeature({ api, store: settings, dataDir: cfg.dataDir, capacity: false });
+  // Mugger's market database: bazaar sellers of abroad items from Weav3r every 30 min, 90 days, plus
+  // Torn's bazaar directories with the server key every 12 h (about 73 calls, lowest priority).
+  // Weav3r gets the server's key too (registered there by the user, who OK'd it 2026-11-25): 25 reads a
+  // minute instead of 10, and every page.
+  const muggerDb = new MuggerDb({ dataDir: cfg.dataDir, travel, api, key: () => api.getKey(), log });
   const war = new WarFeature({ api, store: settings, dataDir: cfg.dataDir });
   const activity = new ActivityStore(cfg.dataDir, { keepDays: cfg.activityKeepDays });
   const archive = new WarArchive(cfg.dataDir);
@@ -829,7 +838,7 @@ async function run(file) {
 
   // Off-site copies: flush everything to disk first so the copy is current.
   const flushAll = () => {
-    for (const st of [history.store, history.baz, travel.history, war.db, research.db, scout.db]) { try { if (st.timer) st.flush(); } catch (e) { /* next time */ } }
+    for (const st of [history.store, history.baz, travel.history, war.db, research.db, scout.db, muggerDb.db]) { try { if (st.timer) st.flush(); } catch (e) { /* next time */ } }
     try { activity.flush(); archive.flush(); } catch (e) { /* next time */ }
     queue.flush();
     energy.flush();
@@ -842,7 +851,7 @@ async function run(file) {
   const C = cfg.collect;
   const loops = [
     [C.war || C.research, war], [C.research, research], [C.travel, travel],
-    [C.prices, market], [C.bazaar, bazaar], [C.scout, scout],
+    [C.prices, market], [C.bazaar, bazaar], [C.scout, scout], [C.mugger && C.travel, muggerDb],
   ].filter(([on]) => on).map(([, f]) => f);
   const ticker = setInterval(() => {
     const now = Date.now();
@@ -864,6 +873,7 @@ async function run(file) {
     prices: { store: history.store },
     bazaar: { store: history.baz },
     scout: { store: scout.sync },
+    mugger: { store: muggerDb.db },
   };
   const revOf = name => `${boot}.${SETS[name].store.rev}`;
   const cache2 = {}; // name -> { rev, json, gz }
@@ -930,9 +940,9 @@ async function run(file) {
     }
     if (at < 0) {
       res.removeHeader('Cache-Control');
-      // The war board's update check file: its userscript header (managers like Userscripts on
-      // iPad/iPhone read updates from a .meta.js), made from the script so it's never out of date.
-      if (url.pathname === '/pda/mentat-war.meta.js') return serveWarMeta(req, res, cfg.publicUrl);
+      // The userscripts' update check files (/pda/mentat-war.meta.js, /pda/mentat-mugger.meta.js).
+      const meta = /^\/pda\/(mentat-[a-z]+)\.meta\.js$/.exec(url.pathname);
+      if (meta) return serveScriptMeta(req, res, meta[1], cfg.publicUrl);
       // Shared war reports: /war/<warId>-<sig> and /war/latest-<sig>.
       const wr = /^\/war\/(\d{1,12}|latest)-([\w-]{12})(?:\/(members))?\/?$/.exec(url.pathname);
       if (wr) return serveReport(req, res, wr[1], wr[2], wr[3] || '');
@@ -1024,6 +1034,43 @@ async function run(file) {
     // The war board (web/pda/mentat-war.user.js): the enemy's members, claims (dibs) and the hit
     // queue in one read. ?members=<fetchedAt the board has> leaves the members out when they
     // haven't changed; ?lite=1 (board closed, just the button's countdown) leaves them out too.
+    // Mugger userscript (web/pda/mentat-mugger.user.js): the best traders for a country from the market
+    // database (no Torn API here: the script looks players up with each member's OWN key, the user's
+    // rule 2026-11-24). ?country=Japan&min=100000&n=60; a pasted People list adds &ids=1,2 (their rows as
+    // `extra` when not among the best) and &names=a,b (trader names -> ids, as `named`).
+    if (route === 'mugger/traders' && req.method === 'GET') {
+      if (!who.pid) return send(req, res, 400, { error: 'Sign in with your API key to use Mugger.' });
+      const c = COUNTRIES.find(x => x.name === url.searchParams.get('country'));
+      if (!c) return send(req, res, 400, { error: 'Unknown country' });
+      const min = [50000, 100000, 250000, 500000, 1000000].includes(Number(url.searchParams.get('min'))) ? Number(url.searchParams.get('min')) : 100000;
+      const n = Math.min(150, Math.max(10, Number(url.searchParams.get('n')) || 60));
+      const items = muggerDb.items();
+      const used = {};
+      const rowOf = ({ id, info, linked }) => {
+        const sc = scores(info, null, null, c.name);
+        for (const i of [...info.items, ...info.small, ...info.spec, ...info.hist]) used[i.id] = [i.name, i.cost, i.countries];
+        const ev = info.raw.ev.slice(-40); // every change (the script marks restocks of TRADE_QTY or fewer as small)
+        for (const e of ev) if (!used[e[1]] && items.get(e[1])) { const m = items.get(e[1]); used[e[1]] = [m.name, m.cost, m.countries]; }
+        return {
+          id, name: info.name, first: info.first,
+          items: [...info.items, ...info.small].map(i => [i.id, i.q, i.price, i.upd]),
+          r30: info.r30, rc30: info.rc30, small30: info.small30,
+          dir: { bazaar: info.bazaar, spec: info.spec.map(x => [x.id, x.customers]), busiest: info.busiest, income: info.income, bulk: info.bulk }, s30: info.s30, sv30: info.sv30, active: info.active,
+          rc30Here: info.rc30Here, linked,
+          hist: info.hist.slice(0, 12).map(x => [x.id, x.q]), // what they have traded (90 days), for trip money
+          ev, partsHere: sc.here.parts, partsAll: sc.all.parts,
+        };
+      };
+      const traders = rankTraders(muggerDb, c.name, min, n).map(rowOf);
+      const named = {};
+      const idx = muggerDb.nameIndex();
+      for (const nm of String(url.searchParams.get('names') || '').split(',').map(x => x.trim()).filter(Boolean).slice(0, 200)) { const id = idx.get(nm.toLowerCase()); if (id) named[nm] = id; }
+      const inList = new Set(traders.map(t => t.id));
+      const want = [...new Set([...String(url.searchParams.get('ids') || '').split(',').map(Number).filter(x => Number.isInteger(x) && x > 0).slice(0, 300), ...Object.values(named)])].filter(id => !inList.has(id));
+      const extra = want.map(id => { const info = traderInfo(muggerDb.seller(id), items, c.name, min); return info ? rowOf({ id, info, linked: linked(info, null, c.name) }) : null; }).filter(Boolean);
+      return send(req, res, 200, { script: { version: scriptVersion('mentat-mugger') }, country: c.name, min, db: muggerDb.stats(), items: used, traders, extra, named });
+    }
+
     if (route === 'war/board' && req.method === 'GET') {
       if (!who.pid) return send(req, res, 400, { error: 'Sign in with your API key to use the war board.' });
       const name = (who.me && who.me.name) || (isOwnerPid(who.pid) && account ? account.name : '') || `#${who.pid}`;
@@ -1069,7 +1116,7 @@ async function run(file) {
         energy: ours ? energy.view() : null,
         me: { id: who.pid, name, lead: isLead(who), role: roleOf(who), admin: isAdminWho(who), position: positionOf(who.pid) },
         live: { inWar: war.inWar() },
-        script: { version: warScriptVersion() },
+        script: { version: scriptVersion('mentat-war') },
         positions: (who.owner || who.admin || isOwnerPid(who.pid)) && war.state.ours ? [...new Set(war.state.ours.members.map(m => m.position).filter(Boolean))] : null,
         roster: !lite && isLead(who) ? factionRoster() : null,
         own: war.state.own ? { id: war.state.own.id, name: war.state.own.name } : null,

@@ -115,7 +115,7 @@ class UserFeature extends EventEmitter {
         status: { state: s.state || '', description: s.description || '', details: s.details || '', color: s.color || '', until: local(s.until) },
         bars: limited ? null : { energy: bar(d.energy), nerve: bar(d.nerve), happy: bar(d.happy), life: bar(d.life) },
         cooldowns: limited ? null : { drug: at + (cd.drug || 0) * 1000, booster: at + (cd.booster || 0) * 1000, medical: at + (cd.medical || 0) * 1000 },
-        travel: tr && tr.destination ? { destination: tr.destination, method: tr.method || '', arriveAt: at + (tr.time_left || 0) * 1000, departedAt: local(tr.departed) } : null,
+        travel: tr && tr.destination ? { destination: tr.destination, method: tr.method || '', arriveAt: at + (tr.time_left || 0) * 1000, departedAt: local(tr.departed), departed: tr.departed || 0 } : null,
         refills: rf ? { energy: !!rf.energy_refill_used, nerve: !!rf.nerve_refill_used, token: !!rf.token_refill_used } : null,
         notifications: n ? { messages: n.messages || 0, events: n.events || 0, awards: n.awards || 0 } : null,
       },

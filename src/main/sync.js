@@ -21,7 +21,7 @@ const PUSH_DELAY = 2500;
 const COVER_GRACE = 10 * 60e3; // server unreachable this long -> collect here again
 const START_GRACE = 3 * 60e3;  // ...but not in the first minutes after launch
 // How often each data set may be downloaded (when the server says it changed).
-const PULL_EVERY = { research: 2 * 60e3, war: 60e3, travel: 2 * 60e3, prices: 30 * 60e3, bazaar: 30 * 60e3, scout: 5 * 60e3 };
+const PULL_EVERY = { research: 2 * 60e3, war: 60e3, travel: 2 * 60e3, prices: 30 * 60e3, bazaar: 30 * 60e3, scout: 5 * 60e3, mugger: 30 * 60e3 };
 // After you pick a faction to research: check every 10 s (for up to 5 minutes) until its first data arrives.
 const RESEARCH_WAIT = 5 * 60e3;
 const RESEARCH_WAIT_POLL = 10e3;
@@ -352,6 +352,7 @@ class SyncFeature extends EventEmitter {
     this.pulledRev[name] = st.revs[name];
     this.pulledAt[name] = Date.now();
     if (name === 'scout') { if (this.scout) this.scout.applyRemote(data); }
+    else if (name === 'mugger') { if (this.muggerDb) this.muggerDb.applyRemote(data); }
     else if (name === 'research') this.research.applyRemote(data);
     else if (name === 'travel') this.travel.applyRemote(data, st.travel || {});
     else if (name === 'war') {

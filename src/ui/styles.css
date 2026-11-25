@@ -1012,3 +1012,18 @@ details.ra .ra-adds { display: flex; flex-wrap: wrap; gap: 4px; }
 details.ra .ra-adds button { font-size: 12px; }
 details.ra .note { margin: 0; }
 .abroad-stock td { vertical-align: top; }
+
+/* ---- Mugger ---- */
+.mug-scores { display: inline-flex; flex-direction: column; gap: 2px; align-items: flex-end; }
+.mug-wip { margin: 2px 0 8px; padding: 6px 10px; border: 1px dashed var(--pill-warn); border-radius: 6px; background: var(--pill-warn-bg); color: var(--pill-warn); font-weight: 700; text-align: center; letter-spacing: .04em; }
+.mug-paste textarea { width: 100%; box-sizing: border-box; min-height: 44px; resize: vertical; font: inherit; font-size: 12px; }
+.mug-protected ul { margin: 6px 0 0; padding-left: 18px; font-size: 12px; }
+table.mug-table td { vertical-align: middle; }
+table.mug-table td.mug-act { white-space: nowrap; text-align: right; }
+table.mug-table td.mug-act button { padding: 2px 8px; font-size: 12px; margin-left: 3px; }
+.mug-detail { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(320px, 1.6fr) minmax(240px, 1fr); gap: 14px; padding: 10px 12px; }
+.mug-dcol { min-width: 0; }
+.mug-part { display: grid; grid-template-columns: 150px 1fr 44px; align-items: center; gap: 6px; font-size: 11px; margin-top: 4px; }
+.mug-track { height: 6px; background: var(--bg-4); border-radius: 3px; overflow: hidden; }
+.mug-track span { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
+@media (max-width: 1100px) { .mug-detail { grid-template-columns: 1fr; } }

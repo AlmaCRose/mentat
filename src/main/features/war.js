@@ -476,4 +476,4 @@ class WarFeature extends EventEmitter {
   }
 }
 
-module.exports = { WarFeature, counts, member };
+module.exports = { WarFeature, counts, member, parseTrip, flightRange, COUNTRY_BY_NAME };

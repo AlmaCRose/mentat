@@ -43,6 +43,8 @@ const { ScoutFeature } = require('./features/scout');
 const { CasinoFeature } = require('./features/casino');
 const { PlannerFeature } = require('./features/planner');
 const { AvatarsFeature } = require('./features/avatars');
+const { MuggerFeature } = require('./features/mugger');
+const { MuggerDb } = require('./features/muggerdb');
 const { SETTABLE, OVERRIDE_PATH, TAB_LAYOUT_DEFAULTS, LIGHT_THEMES, num } = require('./schema');
 
 function createCore(host) {
@@ -85,7 +87,7 @@ function createCore(host) {
   const scout = new ScoutFeature({ api, store, dataDir, war, activity, archive, research, local: !!host.scoutLocal });
   war.statsWanted = () => research.tracked().length > 0;
   // FFScouter estimates for your targets and for the enemy faction on the War tab.
-  const ffscouter = new FFScouterFeature({ store, dataDir, getTargetIds: () => [...new Set([...Object.keys(store.get('targets.list') || {}).map(Number), ...war.enemyIds(), ...research.memberIds()])] });
+  const ffscouter = new FFScouterFeature({ store, dataDir, getTargetIds: () => [...new Set([...Object.keys(store.get('targets.list') || {}).map(Number), ...war.enemyIds(), ...research.memberIds(), ...mugger.ffIds()])] });
   let enemyKey = '';
   war.on('state', () => {
     const k = war.enemyIds().join(',');
@@ -123,6 +125,22 @@ function createCore(host) {
   // Profile pictures: free from the profiles Targets fetches anyway, the rest a few a minute.
   const avatars = new AvatarsFeature({ api, store, dataDir });
   targets.on('profile', (id, d) => avatars.put(id, d && d.profile_image));
+  // Mugger: a 90-day market database of bazaar sellers of abroad items (Weav3r; collected by the Mentat
+  // server, or here without one), and while you're abroad, where they are, their cash and the fight.
+  const muggerDb = new MuggerDb({ dataDir, travel, api }); // bazaar directories with your key when there's no server
+  const mugger = new MuggerFeature({ api, store, dataDir, db: muggerDb, user, viewing });
+  muggerDb.remote = () => sync.covering() && sync.hasPulled('mugger'); // the server's copy has arrived
+  muggerDb.useServer = () => sync.mode() === 'server' && sync.configured();
+  sync.muggerDb = muggerDb;
+  mugger.extraIds = () => Object.keys(store.get('targets.list') || {}).map(Number);
+  mugger.on('profile', (id, d) => avatars.put(id, d && d.profile_image));
+  let muggerFfKey = '';
+  mugger.on('state', () => {
+    const k = mugger.ffIds().join(',');
+    if (k && k !== muggerFfKey) ffscouter.refreshSoon();
+    muggerFfKey = k;
+  });
+  user.on('state', () => mugger.emitSoon()); // your trip
   // FFScouter summaries for the team's war report link (its Comparison tab; the user's request,
   // 2026-11-24). The server has no FFScouter key, so the owner's or an admin's device shares what it
   // loaded for the researched factions: activity by hour of the week, estimated battle stats and
@@ -219,7 +237,7 @@ function createCore(host) {
       host.notify(title, body, 'https://ffscouter.com/premium', { ...urgentOpts(), repeat: 0 });
     },
   };
-  const features = { user, chain, research, scout, war, claims, warreport, targets, market, travel, bazaar, ffscouter, alerts, casino, planner, avatars, sync, ...(host.extraFeatures || {}) };
+  const features = { user, chain, research, scout, war, claims, warreport, targets, market, travel, bazaar, ffscouter, alerts, casino, planner, avatars, mugger, sync, ...(host.extraFeatures || {}) };
 
   // Settings changed on another device (from the Mentat server).
   function applySynced(changed) {
@@ -267,6 +285,7 @@ function createCore(host) {
       war: { interval: store.get('war.interval'), live: store.get('war.live') },
       travel: travelSettings, market: marketSettings,
       ffscouter: { intervalHours: store.get('ffscouter.intervalHours') },
+      mugger: store.get('mugger'),
       alerts: { volume: store.get('alerts.volume') },
       ...(host.publicExtra ? host.publicExtra() : {}),
     };
@@ -292,6 +311,7 @@ function createCore(host) {
       if (p.startsWith('scout.')) scout.emit('state');
       if (p.startsWith('planner.')) planner.emit('state');
       if (p === 'ui.avatars') avatars.emit('state');
+      if (p.startsWith('mugger.')) { mugger.pool = null; mugger.emitSoon(); }
     }
     if (host.onSetting) host.onSetting(p, value);
     send('settings', publicSettings());
@@ -405,6 +425,10 @@ function createCore(host) {
     'casino.logKey.save': key => casino.saveLogKey(key),
     'casino.logKey.remove': () => casino.removeLogKey(),
     'casino.log.import': () => casino.importLog(),
+    'mugger.scan': () => mugger.scanNow(),
+    'mugger.recheck': id => mugger.recheck(Number(id) || 0),
+    'mugger.paste': text => mugger.paste(String(text || '').slice(0, 200000)),
+    'mugger.pasteClear': () => mugger.pasteClear(),
     'planner.add': it => planner.add(it),
     'planner.update': (id, patch) => planner.update(String(id), patch),
     'planner.remove': id => planner.remove(String(id)),
@@ -414,7 +438,7 @@ function createCore(host) {
 
   // Everything to disk (quitting, or the page going away).
   function flushAll() {
-    for (const s of [store, cache, history, travel, war, research, scout, warreport]) { try { s.flush(); } catch (e) { console.error(e); } }
+    for (const s of [store, cache, history, travel, war, research, scout, warreport, mugger, muggerDb]) { try { s.flush(); } catch (e) { console.error(e); } }
     try { if (activity) activity.flush(); if (archive) archive.flush(); } catch (e) { /* best effort */ }
     if (ffscouter.intelDb) ffscouter.intelDb.flush();
     sync.flush();
@@ -424,7 +448,7 @@ function createCore(host) {
 
   return {
     api, features, commands, publicSettings, setSetting, applySynced, flushAll, stop,
-    user, chain, targets, market, travel, bazaar, war, research, scout, ffscouter, alerts, casino, sync, history, cache, premiumReminder,
+    user, chain, targets, market, travel, bazaar, war, research, scout, ffscouter, alerts, casino, mugger, sync, history, cache, premiumReminder,
   };
 }
 

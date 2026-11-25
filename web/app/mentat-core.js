@@ -219,6 +219,8 @@ const { ScoutFeature } = require('./features/scout');
 const { CasinoFeature } = require('./features/casino');
 const { PlannerFeature } = require('./features/planner');
 const { AvatarsFeature } = require('./features/avatars');
+const { MuggerFeature } = require('./features/mugger');
+const { MuggerDb } = require('./features/muggerdb');
 const { SETTABLE, OVERRIDE_PATH, TAB_LAYOUT_DEFAULTS, LIGHT_THEMES, num } = require('./schema');
 
 function createCore(host) {
@@ -261,7 +263,7 @@ function createCore(host) {
   const scout = new ScoutFeature({ api, store, dataDir, war, activity, archive, research, local: !!host.scoutLocal });
   war.statsWanted = () => research.tracked().length > 0;
   // FFScouter estimates for your targets and for the enemy faction on the War tab.
-  const ffscouter = new FFScouterFeature({ store, dataDir, getTargetIds: () => [...new Set([...Object.keys(store.get('targets.list') || {}).map(Number), ...war.enemyIds(), ...research.memberIds()])] });
+  const ffscouter = new FFScouterFeature({ store, dataDir, getTargetIds: () => [...new Set([...Object.keys(store.get('targets.list') || {}).map(Number), ...war.enemyIds(), ...research.memberIds(), ...mugger.ffIds()])] });
   let enemyKey = '';
   war.on('state', () => {
     const k = war.enemyIds().join(',');
@@ -299,6 +301,22 @@ function createCore(host) {
   // Profile pictures: free from the profiles Targets fetches anyway, the rest a few a minute.
   const avatars = new AvatarsFeature({ api, store, dataDir });
   targets.on('profile', (id, d) => avatars.put(id, d && d.profile_image));
+  // Mugger: a 90-day market database of bazaar sellers of abroad items (Weav3r; collected by the Mentat
+  // server, or here without one), and while you're abroad, where they are, their cash and the fight.
+  const muggerDb = new MuggerDb({ dataDir, travel, api }); // bazaar directories with your key when there's no server
+  const mugger = new MuggerFeature({ api, store, dataDir, db: muggerDb, user, viewing });
+  muggerDb.remote = () => sync.covering() && sync.hasPulled('mugger'); // the server's copy has arrived
+  muggerDb.useServer = () => sync.mode() === 'server' && sync.configured();
+  sync.muggerDb = muggerDb;
+  mugger.extraIds = () => Object.keys(store.get('targets.list') || {}).map(Number);
+  mugger.on('profile', (id, d) => avatars.put(id, d && d.profile_image));
+  let muggerFfKey = '';
+  mugger.on('state', () => {
+    const k = mugger.ffIds().join(',');
+    if (k && k !== muggerFfKey) ffscouter.refreshSoon();
+    muggerFfKey = k;
+  });
+  user.on('state', () => mugger.emitSoon()); // your trip
   // FFScouter summaries for the team's war report link (its Comparison tab; the user's request,
   // 2026-11-24). The server has no FFScouter key, so the owner's or an admin's device shares what it
   // loaded for the researched factions: activity by hour of the week, estimated battle stats and
@@ -395,7 +413,7 @@ function createCore(host) {
       host.notify(title, body, 'https://ffscouter.com/premium', { ...urgentOpts(), repeat: 0 });
     },
   };
-  const features = { user, chain, research, scout, war, claims, warreport, targets, market, travel, bazaar, ffscouter, alerts, casino, planner, avatars, sync, ...(host.extraFeatures || {}) };
+  const features = { user, chain, research, scout, war, claims, warreport, targets, market, travel, bazaar, ffscouter, alerts, casino, planner, avatars, mugger, sync, ...(host.extraFeatures || {}) };
 
   // Settings changed on another device (from the Mentat server).
   function applySynced(changed) {
@@ -443,6 +461,7 @@ function createCore(host) {
       war: { interval: store.get('war.interval'), live: store.get('war.live') },
       travel: travelSettings, market: marketSettings,
       ffscouter: { intervalHours: store.get('ffscouter.intervalHours') },
+      mugger: store.get('mugger'),
       alerts: { volume: store.get('alerts.volume') },
       ...(host.publicExtra ? host.publicExtra() : {}),
     };
@@ -468,6 +487,7 @@ function createCore(host) {
       if (p.startsWith('scout.')) scout.emit('state');
       if (p.startsWith('planner.')) planner.emit('state');
       if (p === 'ui.avatars') avatars.emit('state');
+      if (p.startsWith('mugger.')) { mugger.pool = null; mugger.emitSoon(); }
     }
     if (host.onSetting) host.onSetting(p, value);
     send('settings', publicSettings());
@@ -581,6 +601,10 @@ function createCore(host) {
     'casino.logKey.save': key => casino.saveLogKey(key),
     'casino.logKey.remove': () => casino.removeLogKey(),
     'casino.log.import': () => casino.importLog(),
+    'mugger.scan': () => mugger.scanNow(),
+    'mugger.recheck': id => mugger.recheck(Number(id) || 0),
+    'mugger.paste': text => mugger.paste(String(text || '').slice(0, 200000)),
+    'mugger.pasteClear': () => mugger.pasteClear(),
     'planner.add': it => planner.add(it),
     'planner.update': (id, patch) => planner.update(String(id), patch),
     'planner.remove': id => planner.remove(String(id)),
@@ -590,7 +614,7 @@ function createCore(host) {
 
   // Everything to disk (quitting, or the page going away).
   function flushAll() {
-    for (const s of [store, cache, history, travel, war, research, scout, warreport]) { try { s.flush(); } catch (e) { console.error(e); } }
+    for (const s of [store, cache, history, travel, war, research, scout, warreport, mugger, muggerDb]) { try { s.flush(); } catch (e) { console.error(e); } }
     try { if (activity) activity.flush(); if (archive) archive.flush(); } catch (e) { /* best effort */ }
     if (ffscouter.intelDb) ffscouter.intelDb.flush();
     sync.flush();
@@ -600,7 +624,7 @@ function createCore(host) {
 
   return {
     api, features, commands, publicSettings, setSetting, applySynced, flushAll, stop,
-    user, chain, targets, market, travel, bazaar, war, research, scout, ffscouter, alerts, casino, sync, history, cache, premiumReminder,
+    user, chain, targets, market, travel, bazaar, war, research, scout, ffscouter, alerts, casino, mugger, sync, history, cache, premiumReminder,
   };
 }
 
@@ -708,10 +732,10 @@ const SETTABLE = {
   'chatwin.onTop': bool, 'chatwin.minimizeToBubble': bool, 'chatwin.compact': bool, 'chatwin.hideInBrowser': bool,
 };
 // Per-tab layout: alignment and width of each tab's content (Settings → Appearance).
-const TABS = ['overview', 'chain', 'research', 'faction', 'war', 'targets', 'travel', 'market', 'planner', 'casino', 'alerts', 'settings'];
+const TABS = ['overview', 'chain', 'research', 'faction', 'war', 'targets', 'mugger', 'travel', 'market', 'planner', 'casino', 'alerts', 'settings'];
 const TAB_LABELS = {
   overview: 'Overview', chain: 'Chain', targets: 'Targets', faction: 'My Faction', war: 'War', research: 'Oppo Research',
-  market: 'Market', travel: 'Travel', planner: 'Planner', casino: 'Casino', alerts: 'Alerts', settings: 'Settings',
+  mugger: 'Mugger', market: 'Market', travel: 'Travel', planner: 'Planner', casino: 'Casino', alerts: 'Alerts', settings: 'Settings',
   'targets:list': 'Targets', 'targets:abroad': 'Abroad',
   'research:overview': 'Research', 'research:report': 'War report', 'research:scout': 'Scouting',
   'travel:timed': 'Timed trips', 'travel:plan': 'Leave now', 'travel:items': 'Abroad items', 'travel:sell': 'Sell abroad', 'travel:flights': 'Flights & settings',
@@ -720,7 +744,7 @@ const TAB_LABELS = {
 };
 const TAB_LAYOUT_DEFAULTS = {
   overview: { align: 'center', width: 'narrow' }, chain: { align: 'center', width: 'narrow' },
-  research: { align: 'center', width: 'wide' }, faction: { align: 'center', width: 'wide' }, war: { align: 'center', width: 'medium' }, targets: { align: 'center', width: 'narrow' },
+  research: { align: 'center', width: 'wide' }, faction: { align: 'center', width: 'wide' }, war: { align: 'center', width: 'medium' }, targets: { align: 'center', width: 'narrow' }, mugger: { align: 'center', width: 'full' },
   travel: { align: 'center', width: 'full' }, market: { align: 'center', width: 'full' }, planner: { align: 'center', width: 'wide' }, casino: { align: 'center', width: 'wide' },
   alerts: { align: 'center', width: 'medium' }, settings: { align: 'center', width: 'narrow' },
 };
@@ -753,6 +777,18 @@ SETTABLE['casino.auto'] = bool;
 // which reminders already went off on this device (not synced).
 DEFAULTS.planner = { items: {}, days: 3, fired: {} };
 SETTABLE['planner.days'] = num(1, 60);
+// Mugger (features/mugger.js): the country (auto = your trip's), the cheapest abroad item that counts,
+// how many traders to check during a trip, its share of your API calls per minute, your Masterful
+// Looting level ('auto' = from your merits) and your weapon's Plunder bonus (%). This device only.
+DEFAULTS.mugger = { location: 'auto', minCost: 100000, pool: 60, rate: 20, here: 1, market: 5, looting: 'auto', plunder: 0 };
+SETTABLE['mugger.location'] = v => typeof v === 'string' && /^(auto|Mexico|Cayman Islands|Canada|Hawaii|United Kingdom|Argentina|Switzerland|Japan|China|UAE|South Africa)$/.test(v);
+SETTABLE['mugger.looting'] = v => v === 'auto' || (Number.isInteger(v) && v >= 0 && v <= 10);
+SETTABLE['mugger.plunder'] = v => v === 0 || (Number.isInteger(v) && v >= 20 && v <= 49);
+SETTABLE['mugger.minCost'] = v => [50000, 100000, 250000, 500000, 1000000].includes(v);
+SETTABLE['mugger.pool'] = v => [20, 40, 60, 100, 150].includes(v);
+SETTABLE['mugger.rate'] = v => [10, 20, 30, 45].includes(v);
+SETTABLE['mugger.here'] = v => [1, 2, 3].includes(v); // minutes between checks of players in your country
+SETTABLE['mugger.market'] = v => [2, 5, 10].includes(v); // minutes between their item market checks
 for (const t of TABS) {
   SETTABLE[`ui.tabLayout.${t}.align`] = oneOf('left', 'center', 'right');
   SETTABLE[`ui.tabLayout.${t}.width`] = oneOf('narrow', 'medium', 'wide', 'full');
@@ -1608,8 +1644,9 @@ function unitFor(p) {
 
 // Collected data that can be pulled from (and uploaded to) a sync server.
 // 'scout' is pull-only: the server's scouting view (it never takes a PC's copy).
-const DATASETS = ['research', 'war', 'travel', 'prices', 'bazaar', 'scout'];
-const PULL_ONLY = new Set(['scout']);
+// mugger: Mugger's market database (features/muggerdb.js), collected by the server; apps only read it.
+const DATASETS = ['research', 'war', 'travel', 'prices', 'bazaar', 'scout', 'mugger'];
+const PULL_ONLY = new Set(['scout', 'mugger']);
 
 const isObj = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 
@@ -1799,7 +1836,7 @@ const PUSH_DELAY = 2500;
 const COVER_GRACE = 10 * 60e3; // server unreachable this long -> collect here again
 const START_GRACE = 3 * 60e3;  // ...but not in the first minutes after launch
 // How often each data set may be downloaded (when the server says it changed).
-const PULL_EVERY = { research: 2 * 60e3, war: 60e3, travel: 2 * 60e3, prices: 30 * 60e3, bazaar: 30 * 60e3, scout: 5 * 60e3 };
+const PULL_EVERY = { research: 2 * 60e3, war: 60e3, travel: 2 * 60e3, prices: 30 * 60e3, bazaar: 30 * 60e3, scout: 5 * 60e3, mugger: 30 * 60e3 };
 // After you pick a faction to research: check every 10 s (for up to 5 minutes) until its first data arrives.
 const RESEARCH_WAIT = 5 * 60e3;
 const RESEARCH_WAIT_POLL = 10e3;
@@ -2130,6 +2167,7 @@ class SyncFeature extends EventEmitter {
     this.pulledRev[name] = st.revs[name];
     this.pulledAt[name] = Date.now();
     if (name === 'scout') { if (this.scout) this.scout.applyRemote(data); }
+    else if (name === 'mugger') { if (this.muggerDb) this.muggerDb.applyRemote(data); }
     else if (name === 'research') this.research.applyRemote(data);
     else if (name === 'travel') this.travel.applyRemote(data, st.travel || {});
     else if (name === 'war') {
@@ -4112,6 +4150,1381 @@ class MarketFeature extends EventEmitter {
 module.exports = { MarketFeature, marketUrl };
 
   },
+  "features/mugger.js": function (module, exports, require) {
+'use strict';
+// Mugger: who is worth mugging where you are abroad, and can you take them.
+//
+// The user's rules (2026-11-24): only players ABROAD matter (in Torn they can bank their money);
+// players who buy costly items abroad carry cash; bazaar and item market sales made while they are
+// abroad go to their cash on hand (wiki "Mug": "the money from the purchase is deposited into their
+// wallet"). Restocks of thousands of items are several trips put in at once, not one.
+//
+// 1. Market database (muggerdb.js): bazaar sellers of abroad items and how their stock moves, 90
+//    days, collected every 30 minutes by the Mentat server (or this device without one). No Torn API.
+// 2. Your trip (Torn API with YOUR key on this device, never the server's — the user's rule,
+//    2026-11-24 — and ONLY while you are flying out or abroad): the best `mugger.pool` traders for
+//    that country from the database plus your Targets/Abroad lists, one /user/{id}?selections=profile
+//    each; players in your country again every `mugger.here` minutes (1 by default, the user's
+//    request 2026-11-24), those flying there every 3, the rest every 20. For each
+//    player near you, once per trip: their job (/v2 job: a 7★ Clothing Store cuts mugs by 75%) and
+//    travel record (/v2 personalstats cat=travel, plus items/trips a week ago); their trading stats
+//    (/v2 personalstats cat=trading) every `mugger.market` minutes (5 by default) while they are in your country: item market
+//    revenue since the first reading this trip = money into their wallet. Your battle stats once per
+//    trip, your merits once a day. FFScouter: core.js adds the players near you to the FFScouter list,
+//    which fetches each once and not again within 6 hours, so once per person per trip.
+// 3. Bazaar sales near you: the items those players sell are re-read from Weav3r every 5 minutes.
+// 4. Possible mug protection (the user's request 2026-11-25): anyone seen in hospital in your trip's
+//    country is flagged for 12 hours from that sighting ("Mugged by" in the reason confirms it), and
+//    the travel record adds their fights lost abroad since yesterday (defendslostabroad, by day, no country).
+//
+// Mug size (Torn wiki "Mug", pasted by the user 2026-11-24): 5% of cash on hand, rolled up to 10%
+// (low values favoured), × (1 + Masterful Looting (5% a level, up to +50%) + Plunder (+20% to 49%),
+// additive); a 7★ Clothing Store employee loses 75% less; after a mug the rest of their wallet is
+// protected, the protection decaying to nothing over 12 hours.
+
+const path = require('path');
+const { EventEmitter } = require('events');
+const { Store } = require('../store');
+const { COUNTRIES } = require('./travel');
+const { parseTrip, flightRange, COUNTRY_BY_NAME } = require('./war');
+const { traderInfo, scores, rankTraders, TRADE_QTY } = require('./muggerdb');
+
+const FLYING_EVERY = 3 * 60e3;
+const FAR_EVERY = 20 * 60e3;
+const RECORD_EVERY = 12 * 3600e3;
+const MERITS_EVERY = 24 * 3600e3;
+const TYPES_EVERY = 7 * 86400e3;
+const RETRY = 2 * 60e3;
+const WEEK = 7 * 86400e3;
+const PLAYER_KEEP = 14 * 86400e3;
+const COUNTRY_STATS = { mex: 'mexico', cay: 'cayman_islands', can: 'canada', haw: 'hawaii', uni: 'united_kingdom', arg: 'argentina', swi: 'switzerland', jap: 'japan', chi: 'china', uae: 'united_arab_emirates', sou: 'south_africa' };
+const MUG = { base: [0.05, 0.10], lootingPerLevel: 0.05, clothing: 0.25 };
+
+const PROTECT = 12 * 3600e3; // a mug protects what is left for 12 hours (Torn wiki "Mug")
+const SAME_STAY = 25 * 60e3; // two hospital sightings this close together are one stay
+// A hospital stay another player caused (only those can be a mug). Seen live 2026-11-25: "Mugged by X",
+// "Hospitalized by X"; self-inflicted ones read like "Suffering from an acute hemolytic transfusion reaction",
+// "Severe emesis following Ipecac Syrup ingestion", "Got a nasty surprise in the post."
+const BY_PLAYER = /^(Mugged|Hospitali[sz]ed|Attacked) by /i;
+const DAY = 86400e3;
+
+const countryOf = name => COUNTRY_BY_NAME.get(String(name || '').trim().replace(/\.$/, '').toLowerCase()) || null;
+
+// A hospital stay abroad reads like "In a Swiss hospital for 23 mins"; one in Torn "In hospital for ...".
+// The abroad wording isn't confirmed against a live answer yet: without a match, the last country seen stands.
+const HOSPITAL_ADJ = { mexican: 'Mexico', caymanian: 'Cayman Islands', canadian: 'Canada', hawaiian: 'Hawaii', british: 'United Kingdom', english: 'United Kingdom', argentinian: 'Argentina', argentine: 'Argentina', swiss: 'Switzerland', japanese: 'Japan', chinese: 'China', emirati: 'UAE', 'south african': 'South Africa' };
+function hospitalCountry(desc) {
+  const m = /^In an? (.+?) hospital\b/i.exec(String(desc || '').trim());
+  if (!m) return '';
+  const adj = HOSPITAL_ADJ[m[1].toLowerCase()];
+  const c = countryOf(adj || m[1]);
+  return c ? c.name : '';
+}
+
+// ---- A pasted list of the people in your country (the user's request 2026-11-25) ----
+// You copy Torn's People list yourself (Mentat never reads Torn's pages) and paste it on the Mugger page.
+// Copied with links, the page turns it into "Name [id]" lines; as plain text, names are matched against
+// the market database, then looked up with Torn's player search (your key). Words that are clearly
+// not names (the list's own labels, countries) are skipped.
+const PASTE_MAX = 300;
+const LOOKUP_MAX = 100;
+const NOT_NAMES = new Set(('level lvl status okay hospital hospitalized traveling travelling abroad jail jailed attack attacks mug ' +
+  'name names faction factions icons icon life online offline idle people page pages next prev previous last first show all sort ' +
+  'by rank age days day hours hrs hour mins min minutes seconds secs ago user users profile list the and for from with you your ' +
+  'mexico cayman islands canada hawaii united kingdom argentina switzerland japan china uae arab emirates south africa torn city ' +
+  'returning flying landing landed bazaar shop market donator member members company none').split(' '));
+function parsePeople(text) {
+  const s = String(text || '');
+  const ids = new Map(); // id -> name
+  for (const m of s.matchAll(/([A-Za-z0-9_-]{1,20})\s*\[(\d{1,8})\]/g)) ids.set(Number(m[2]), m[1]);
+  for (const m of s.matchAll(/(?:XID|user2ID)=(\d{1,8})/gi)) if (!ids.has(Number(m[1]))) ids.set(Number(m[1]), '');
+  const rest = s.replace(/https?:\/\/\S+/gi, ' ').replace(/(?:XID|user2ID)=\d{1,8}/gi, ' ').replace(/[A-Za-z0-9_-]{1,20}\s*\[\d{1,8}\]/g, ' ');
+  const nameLike = [...new Set((rest.match(/[A-Za-z0-9_-]+/g) || []).filter(w => /[A-Za-z]/.test(w) && w.length >= 3 && w.length <= 20 && !NOT_NAMES.has(w.toLowerCase())))];
+  // Only a bare list of numbers is a list of IDs; numbers among words are levels, life and so on.
+  if (!/[A-Za-z]/.test(rest)) for (const m of rest.matchAll(/\b\d{1,8}\b/g)) ids.set(Number(m[0]), '');
+  const named = new Set([...ids.values()].filter(Boolean).map(n => n.toLowerCase()));
+  return { ids: [...ids].filter(([id]) => id > 0).map(([id, name]) => ({ id, name })), names: nameLike.filter(n => !named.has(n.toLowerCase())) };
+}
+
+// Where a player is: place = country name or 'Torn'; kind = here | flying | hospital | jail | away.
+function placeOf(st, lastIn) {
+  st = st || {};
+  const desc = String(st.description || '');
+  if (st.state === 'Okay') return { place: 'Torn', kind: 'here' };
+  if (st.state === 'Abroad') {
+    const m = /^In (.+?)\.?$/i.exec(desc.trim());
+    const c = m && countryOf(m[1]);
+    return { place: c ? c.name : (m ? m[1] : ''), kind: 'here' };
+  }
+  if (st.state === 'Traveling') {
+    const t = parseTrip(desc);
+    if (!t || !t.country) return { place: '', kind: 'flying' };
+    return t.back ? { place: 'Torn', kind: 'flying', from: t.country.name } : { place: t.country.name, kind: 'flying', from: 'Torn' };
+  }
+  if (st.state === 'Hospital') return { place: hospitalCountry(desc) || lastIn || 'Torn', kind: 'hospital' };
+  if (st.state === 'Jail') return { place: 'Torn', kind: 'jail' };
+  return { place: '', kind: 'away' };
+}
+
+// Your trip: flying out to a country, or there. null in Torn or on the way home.
+function myTrip(u) {
+  if (!u) return null;
+  const st = u.status || {};
+  const tr = u.travel;
+  const dest = tr && tr.destination && tr.destination !== 'Torn' ? tr.destination : '';
+  let country = '';
+  if (st.state === 'Traveling') country = dest;
+  else if (st.state === 'Abroad') country = dest || placeOf(st).place;
+  else if (st.state === 'Hospital' && dest) country = dest;
+  const c = countryOf(country);
+  if (!c) return null;
+  // The trip's identity: Torn's own departure time (whole seconds). Not departedAt, which is corrected
+  // for clock skew on every status poll and so moved by milliseconds each time, making every poll a "new
+  // trip" that threw away the checks so far (seen 2026-11-25 on a Hawaii trip: never got past ~19 of 150).
+  const departed = tr && tr.departed ? Number(tr.departed) : 0;
+  return { country: c.name, flying: st.state === 'Traveling', departed, key: `${c.name}|${departed || 'x'}` };
+}
+
+class MuggerFeature extends EventEmitter {
+  constructor({ api, store, dataDir, db, user, viewing = () => false }) {
+    super();
+    this.api = api;
+    this.store = store;
+    this.mdb = db; // the market database (muggerdb.js)
+    this.user = user;
+    this.viewing = viewing;
+    this.db = new Store(path.join(dataDir, 'mugger.json'), { trip: null, players: {}, me: null, merits: null, types: null }, { debounceMs: 20000 });
+    this.extraIds = () => []; // your Targets and Abroad lists (core.js)
+    this.inFlight = false;
+    this.calls = [];
+    this.pool = null;
+    this.emitTimer = null;
+    db.on('state', () => this.emitSoon());
+    db.on('live', () => this.emitSoon());
+    db.on('scanned', () => { this.pool = null; this.emitSoon(); });
+  }
+
+  // ---- Settings ----
+  minCost() { return Math.max(10000, Number(this.store.get('mugger.minCost')) || 100000); }
+  poolSize() { return Math.min(150, Math.max(10, Number(this.store.get('mugger.pool')) || 60)); }
+  rate() { return Math.min(60, Math.max(5, Number(this.store.get('mugger.rate')) || 20)); }
+  // Minutes between checks of players in your country (1-3).
+  hereEvery() { return Math.min(3, Math.max(1, Number(this.store.get('mugger.here')) || 1)) * 60e3; }
+  // Minutes between item market checks of players in your country (2-10).
+  marketEvery() { return Math.min(10, Math.max(2, Number(this.store.get('mugger.market')) || 5)) * 60e3; }
+  lootingAuto() { const v = this.store.get('mugger.looting'); return v === 'auto' || v === undefined || v === null; }
+  // Masterful Looting level: from your merits (auto) or set by hand.
+  looting() {
+    if (this.lootingAuto()) { const m = this.db.data.merits; return m && Number.isFinite(m.looting) ? m.looting : 0; }
+    return Math.min(10, Math.max(0, Number(this.store.get('mugger.looting')) || 0));
+  }
+  plunder() { return Math.min(49, Math.max(0, Number(this.store.get('mugger.plunder')) || 0)); }
+  mult() { return 1 + this.looting() * MUG.lootingPerLevel + this.plunder() / 100; }
+
+  // Your trip. If Torn's answer lacks the departure time (e.g. after landing), the trip to the same
+  // country already under way carries on instead of starting over.
+  trip() {
+    const t = myTrip(this.user.state && this.user.state.data);
+    const d = this.db.data.trip;
+    if (t && !t.departed && d && d.country === t.country && d.departed && Date.now() - d.departed * 1000 < 12 * 3600e3) return { ...t, departed: d.departed, key: d.key };
+    return t;
+  }
+
+  // The country on show: your choice, else your trip's, else the last one you went to.
+  location() {
+    const v = String(this.store.get('mugger.location') || 'auto');
+    if (v !== 'auto' && countryOf(v)) return countryOf(v).name;
+    const t = this.trip();
+    if (t) return t.country;
+    const last = this.db.data.trip;
+    return last && last.country ? last.country : 'Mexico';
+  }
+
+  // Live (Torn API) only for the country of your trip.
+  live() {
+    const t = this.trip();
+    return !!t && t.country === this.location();
+  }
+
+  // ---- What the market database says about a seller (no API; muggerdb.js traderInfo) ----
+  sellerInfo(pid, items, country, now = Date.now()) {
+    return traderInfo(this.mdb.seller(pid), items, country, this.minCost(), now);
+  }
+
+  // Bazaar sales since a time (at most 3× the abroad price each), database + watched readings.
+  bazaarSold(info, since, items) {
+    let value = 0, units = 0;
+    for (const e of info.raw.ev) {
+      if (e[0] < since || e[2] >= 0) continue;
+      const m = items.get(e[1]);
+      value += -e[2] * Math.min(e[3], m ? m.cost * 3 : e[3]);
+      units += -e[2];
+    }
+    return { value, units };
+  }
+
+  // ---- Scores: for the country and overall, each 0-100 (muggerdb.js scores) ----
+  score(info, rec, cash, country) {
+    return scores(info, rec, cash, country);
+  }
+
+  // Items a trip: their last week's pace, else their average, else your capacity (the page says so).
+  // Their carrying capacity, estimated (the user's rules, 2026-11-25): 15 always (5 base + 10 from a
+  // Private Island airstrip, WLT stock or a Business Class Ticket); faction excursion upgrades +10 (only
+  // your own faction's upgrades are in the API, so assumed maxed); a large suitcase +3 (the standard
+  // 28-item setup); a Cruise Line job +2 from 3★, +5 at 10★ (from their job). No Smuggling For Beginners
+  // book (unlikely); the 7★ Flower/Toy Shop bonus is for flowers and plushies only, so not counted.
+  capacityOf(p) {
+    const parts = [[15, 'base + airstrip/WLT/ticket'], [10, 'faction excursions (assumed maxed)'], [3, 'large suitcase (assumed)']];
+    const j = p && p.job && !p.job.error ? p.job : null;
+    const cruise = j && j.cruise ? (j.rating >= 10 ? 5 : j.rating >= 3 ? 2 : 0) : 0;
+    if (cruise) parts.push([cruise, `${j.rating}★ Cruise Line`]);
+    return { n: parts.reduce((a, x) => a + x[0], 0), text: parts.map(x => `${x[0]} ${x[1]}`).join(' + '), jobKnown: !!j };
+  }
+
+  // Items a trip: a trader flying out goes for a full load (the user's rule, 2026-11-25): their estimated
+  // capacity, or their own average a trip if that's higher (a book, say).
+  perTrip(rec, p = null) {
+    let own = null;
+    if (rec && rec.week && rec.week.trips > 0 && rec.week.items > 0) own = { n: rec.week.items / rec.week.trips, basis: 'their last week' };
+    else if (rec && rec.now && rec.now.trips > 0 && rec.now.items > 0) own = { n: rec.now.items / rec.now.trips, basis: 'their average' };
+    const cap = this.capacityOf(p);
+    if (own && own.n > cap.n) return { n: own.n, basis: `a full load (${own.basis}: ${Math.round(own.n)} a trip, above the ${cap.n} estimated)`, cap };
+    return { n: cap.n, basis: `a full load (${cap.n} = ${cap.text}${cap.jobKnown ? '' : '; job not checked yet'})`, cap };
+  }
+
+  // What they trade from a country: what they've listed (more than 5 at once) or restocked in the last
+  // 90 days, and what Torn's bazaar directory says their bazaar specialises in. Most first.
+  tradesFrom(info, country) {
+    if (!info) return [];
+    const out = new Map();
+    for (const x of info.hist || []) if (x.countries.includes(country)) out.set(x.id, { ...x });
+    for (const x of info.items) if (x.countries.includes(country) && !out.has(x.id)) out.set(x.id, { ...x });
+    for (const x of info.spec || []) if (x.countries.includes(country) && !out.has(x.id)) out.set(x.id, { ...x, q: x.customers });
+    return [...out.values()].sort((a, b) => b.q - a.q);
+  }
+
+  // Cash a trip takes: a full load × the abroad price of what they've traded most from this country.
+  // No record of them trading anything from it: not known. No guessing (the user's rule, 2026-11-25).
+  tripCash(info, rec, country, p = null) {
+    const local = this.tradesFrom(info, country);
+    if (!local.length) return null;
+    const staple = local[0];
+    const pt = this.perTrip(rec, p);
+    return { amount: pt.n * staple.cost, items: pt.n, basis: pt.basis, name: staple.name, cost: staple.cost, local: true, why: 'what they have sold most from there' };
+  }
+
+  tripUnknown(info, country) {
+    return info && !this.tradesFrom(info, country).length ? `No record in the market database of them selling anything from ${country}, so what they buy there (and the money it takes) isn't known.` : '';
+  }
+
+  // Cash on hand now, estimated (live only): the money for the trip while they're still flying out,
+  // plus bazaar and item market sales since they left Torn.
+  cashNow(p, info, rec, country, items) {
+    if (!p || !p.place) return null;
+    const out = { since: p.awaySince || 0, trip: 0, bazaar: 0, bazaarUnits: 0, market: 0, total: 0 };
+    if (p.place.kind === 'flying' && p.place.place === country) {
+      const tc = this.tripCash(info, rec, country, p);
+      if (tc) out.trip = tc.amount;
+      else out.tripUnknown = this.tripUnknown(info, country);
+    }
+    if (info && out.since) { const b = this.bazaarSold(info, out.since, items); out.bazaar = b.value; out.bazaarUnits = b.units; }
+    const t0 = p.trade0, t1 = p.trade;
+    if (t0 && t1 && !t1.error && !t0.error) out.market = Math.max(0, (t1.revenue - t0.revenue) - (t1.fees - t0.fees));
+    out.total = out.trip + out.bazaar + out.market;
+    return out;
+  }
+
+  // What a mug takes from that cash (wiki formula), with the 7★ Clothing Store cut.
+  mugTake(cash, p) {
+    if (!cash || !(cash.total > 0)) return null;
+    const clothing = !!(p && p.job && p.job.clothing && p.job.rating >= 7);
+    const k = this.mult() * (clothing ? MUG.clothing : 1);
+    return { lo: cash.total * MUG.base[0] * k, hi: cash.total * MUG.base[1] * k, pctLo: MUG.base[0] * k, pctHi: MUG.base[1] * k, clothing };
+  }
+
+  // ---- The traders for a country: best from the database, plus your lists ----
+  candidates(country) {
+    const best = rankTraders(this.mdb, country, this.minCost(), this.poolSize(), pid => this.record(pid)).map(x => x.id);
+    const extra = (this.extraIds() || []).map(Number).filter(Boolean);
+    return [...new Set([...best, ...extra])];
+  }
+
+  record(pid) {
+    const p = this.db.data.players[pid];
+    return p && p.rec && !p.rec.error ? p.rec : null;
+  }
+
+  // Possible mug protection: seen in hospital in this country within the last 12 hours.
+  protection(p, country, now = Date.now()) {
+    const h = p && p.hosp;
+    if (!h || h.place !== country || now - h.at >= PROTECT || !BY_PLAYER.test(h.text || '')) return null;
+    return { at: h.at, seen: h.seen, ends: h.at + PROTECT, place: h.place, text: h.text, mugged: !!h.mugged, now: !!(p.place && p.place.kind === 'hospital') };
+  }
+
+  // Mugged in this country within 12 hours (the hospital reason said so): what they had left is
+  // protected, so they come off the list into the Mug protected box and aren't checked again until the
+  // protection ends (the user's request, 2026-11-25).
+  muggedHere(p, country, now = Date.now()) {
+    const pr = this.protection(p, country, now);
+    return pr && pr.mugged ? pr : null;
+  }
+
+  near(p, country) {
+    return !!(p && p.place && p.place.place === country && ['here', 'flying', 'hospital'].includes(p.place.kind));
+  }
+
+  // ---- The pasted People list: kept for this trip; once you've landed, only these are checked ----
+  pasteFor(trip, create = false) {
+    const p = this.db.data.paste;
+    if (p && trip && p.trip === trip.key) return p;
+    if (!create || !trip) return null;
+    return (this.db.data.paste = { trip: trip.key, country: trip.country, at: Date.now(), ids: [], names: {}, left: [], lookups: [], notFound: [], lookupRetryAt: 0 });
+  }
+
+  pasteActive(trip) {
+    const p = this.pasteFor(trip);
+    return !!(p && !trip.flying && (p.ids.length || p.lookups.length));
+  }
+
+  pasteAdd(ps, id, name) {
+    id = Number(id);
+    if (!Number.isInteger(id) || id <= 0 || ps.ids.includes(id) || ps.ids.length >= PASTE_MAX) return false;
+    ps.ids.push(id);
+    if (name) ps.names[id] = String(name).slice(0, 30);
+    ps.left = ps.left.filter(x => x.id !== id);
+    return true;
+  }
+
+  paste(text) {
+    const trip = this.trip();
+    if (!trip) return { error: "Paste Torn's People list once you're abroad." };
+    const { ids, names } = parsePeople(text);
+    if (!ids.length && !names.length) return { error: 'No players found in that text.' };
+    const ps = this.pasteFor(trip, true);
+    ps.at = Date.now();
+    const known = new Map(this.mdb.nameIndex());
+    for (const [pid, p] of Object.entries(this.db.data.players)) if (p.name) known.set(String(p.name).toLowerCase(), Number(pid));
+    let added = 0, byName = 0;
+    for (const x of ids) if (this.pasteAdd(ps, x.id, x.name)) added++;
+    for (const n of names) {
+      const id = known.get(n.toLowerCase());
+      if (id) { if (this.pasteAdd(ps, id, n)) { added++; byName++; } } else if (!ps.lookups.includes(n) && !ps.notFound.includes(n)) ps.lookups.push(n);
+    }
+    ps.lookups = ps.lookups.slice(0, LOOKUP_MAX);
+    this.pool = null;
+    this.db.save();
+    this.emitSoon();
+    return { added, byName, lookups: ps.lookups.length, total: ps.ids.length };
+  }
+
+  // Players from a list on a Torn page (right-click "Add all players in this list to Mugger", main.js, the
+  // user's request 2026-11-25): onto the pasted list for this trip, exactly as a paste with links.
+  addPlayers(players) {
+    const trip = this.trip();
+    if (!trip) return { error: 'Mugger adds players once you are flying out or abroad.' };
+    const ps = this.pasteFor(trip, true);
+    ps.at = Date.now();
+    let added = 0;
+    for (const x of players || []) if (this.pasteAdd(ps, x.id, x.name)) added++;
+    this.pool = null;
+    this.db.save();
+    this.emitSoon();
+    return { added, total: ps.ids.length, full: ps.ids.length >= PASTE_MAX, country: trip.country, landed: !trip.flying };
+  }
+
+  pasteClear() {
+    this.db.data.paste = null;
+    this.pool = null;
+    this.db.save();
+    this.emitSoon();
+  }
+
+  // A name from a plain-text paste: Torn's player search (your key), exact name only.
+  async fetchLookup(name, trip) {
+    const ps = this.pasteFor(trip);
+    if (!ps) return;
+    const drop = () => { ps.lookups = ps.lookups.filter(n => n !== name); };
+    try {
+      const d = await this.api.request(`/v2/user/search?name=${encodeURIComponent(name)}`, { soft: [6, 7, 16], priority: 8 });
+      const hit = (d.search || []).find(u => u && String(u.name || '').toLowerCase() === name.toLowerCase());
+      drop();
+      if (hit && this.pasteAdd(ps, hit.id, hit.name)) this.pool = null;
+      else if (!hit) ps.notFound = [...ps.notFound, name].slice(-60);
+    } catch (e) {
+      if (e.kind === 'soft') { drop(); ps.notFound = [...ps.notFound, name].slice(-60); } else ps.lookupRetryAt = Date.now() + RETRY;
+    }
+  }
+
+  // ---- Torn API jobs during your trip ----
+  nextJob(now, trip) {
+    const d = this.db.data;
+    if (!d.me || d.me.trip !== trip.key) return { kind: 'mystats' };
+    if (this.lootingAuto() && (!d.merits || now - d.merits.at >= MERITS_EVERY) && !(d.merits && d.merits.retryAt > now)) return { kind: 'merits' };
+    if ((!d.types || !d.types.cruise || now - d.types.at >= TYPES_EVERY) && !(d.types && d.types.retryAt > now)) return { kind: 'types' };
+    const ps = this.pasteFor(trip);
+    if (ps && ps.lookups.length && !(ps.lookupRetryAt > now)) return { kind: 'lookup', name: ps.lookups[0] };
+    let best = null;
+    const consider = (pri, job) => { if (!best || pri < best.pri) best = { ...job, pri }; };
+    for (const id of this.pool || []) {
+      const p = d.players[id];
+      if (p && p.retryAt > now) continue;
+      if (this.muggedHere(p, trip.country, now)) continue; // mug protected: not checked again for now
+      if (p && p.invalid && now - p.at < 86400e3) continue;
+      const checked = p && p.tripKey === trip.key ? p.at : 0;
+      if (!checked) { consider(-3e12, { kind: 'profile', id }); continue; }
+      const near = this.near(p, trip.country);
+      if (near) {
+        if (!p.job || p.job.trip !== trip.key) { consider(-2e12, { kind: 'job', id }); continue; }
+        if (!p.rec || now - p.rec.at >= RECORD_EVERY) { consider(-2e12 + 1, { kind: 'record', id }); continue; }
+        // Item market: as overdue as a location check would be (it used to wait for every location check,
+        // so with many players near you it never came round).
+        if (p.place.kind === 'here' && (!p.trade || now - p.trade.at >= this.marketEvery())) consider(p.trade ? -(now - p.trade.at - this.marketEvery()) : -1e12, { kind: 'trading', id });
+      }
+      const every = !near ? FAR_EVERY : p.place.kind === 'flying' ? FLYING_EVERY : this.hereEvery();
+      const due = every - (now - checked);
+      if (due <= 0) consider(due, { kind: 'profile', id });
+    }
+    return best;
+  }
+
+  async runJob(job, trip) {
+    this.inFlight = true;
+    this.calls.push(Date.now());
+    try {
+      const run = { mystats: () => this.fetchMyStats(trip), merits: () => this.fetchMerits(), types: () => this.fetchTypes(), profile: () => this.fetchProfile(job.id, trip), job: () => this.fetchJob(job.id, trip), record: () => this.fetchRecord(job.id, trip), trading: () => this.fetchTrading(job.id, trip), lookup: () => this.fetchLookup(job.name, trip) }[job.kind];
+      await run();
+    } finally {
+      this.inFlight = false;
+      this.db.save();
+      if (job.kind === 'profile') this.updateWatch(trip);
+      this.emitSoon();
+    }
+  }
+
+  player(id) {
+    const ps = this.db.data.players;
+    return ps[id] || (ps[id] = { id });
+  }
+
+  async fetchMyStats(trip) {
+    try {
+      const d = await this.api.request('/v2/user/battlestats', { soft: [16], priority: 7 });
+      const b = d.battlestats || {};
+      const v = k => (b[k] && b[k].value) || 0;
+      const total = (typeof b.total === 'number' ? b.total : 0) || v('strength') + v('defense') + v('speed') + v('dexterity');
+      this.db.data.me = { trip: trip.key, total, strength: v('strength'), defense: v('defense'), speed: v('speed'), dexterity: v('dexterity'), at: Date.now() };
+    } catch (e) {
+      this.db.data.me = { trip: trip.key, denied: e.kind === 'soft', error: e.message, at: Date.now() };
+    }
+  }
+
+  async fetchMerits() {
+    try {
+      const mine = await this.api.request('/v2/user/merits', { soft: [16], priority: 8 });
+      const all = await this.api.request('/v2/torn/merits', { soft: [16], priority: 8 });
+      const def = ((all && all.merits) || []).find(m => /masterful looting/i.test(m.name || ''));
+      const up = def && ((mine && mine.merits && mine.merits.upgrades) || []).find(u => u.id === def.id);
+      this.db.data.merits = { looting: def ? (up ? up.level : 0) : null, at: Date.now() };
+    } catch (e) {
+      this.db.data.merits = { ...(this.db.data.merits || { looting: null, at: 0 }), retryAt: Date.now() + (e.kind === 'soft' ? 86400e3 : RETRY) };
+    }
+  }
+
+  // Company type ids named like "Clothing Store" (for the 75% cut).
+  async fetchTypes() {
+    try {
+      const d = await this.api.request('/v2/torn/companies', { soft: [16], priority: 8 });
+      const ids = [], cruise = [];
+      const walk = (o, key) => {
+        if (!o || typeof o !== 'object') return;
+        if (Array.isArray(o)) { o.forEach(x => walk(x)); return; }
+        if (typeof o.name === 'string' && /clothing/i.test(o.name)) { const id = Number(o.id ?? key); if (Number.isFinite(id)) ids.push(id); }
+        if (typeof o.name === 'string' && /cruise/i.test(o.name)) { const id = Number(o.id ?? key); if (Number.isFinite(id)) cruise.push(id); }
+        for (const [k, v] of Object.entries(o)) if (v && typeof v === 'object') walk(v, k);
+      };
+      walk(d);
+      this.db.data.types = { clothing: [...new Set(ids)], cruise: [...new Set(cruise)], at: Date.now() };
+    } catch (e) {
+      this.db.data.types = { ...(this.db.data.types || { clothing: [], at: 0 }), retryAt: Date.now() + RETRY };
+    }
+  }
+
+  async fetchProfile(id, trip) {
+    const p = this.player(id);
+    const now = Date.now();
+    try {
+      const d = await this.api.request(`/user/${id}?selections=profile`, { soft: [6, 7], priority: 8 });
+      this.emit('profile', id, d);
+      const st = d.status || {};
+      const same = p.tripKey === trip.key;
+      const prev = same ? p.place : null;
+      const prevAt = same ? p.at : 0;
+      const wasHosp = !!(p.place && p.place.kind === 'hospital');
+      if (!same) Object.assign(p, { tripKey: trip.key, awaySince: 0, trade0: null, trade: null, flight: null });
+      p.name = d.name || p.name || '';
+      p.level = d.level || 0;
+      p.age = d.age || 0;
+      p.faction = d.faction && d.faction.faction_name ? { id: d.faction.faction_id, name: d.faction.faction_name } : null;
+      p.status = { state: st.state || '', description: st.description || '', details: String(st.details || '').replace(/<[^>]*>/g, ''), until: (st.until || 0) * 1000, plane: st.plane_image_type || '' };
+      p.life = d.life ? { current: d.life.current, maximum: d.life.maximum } : null;
+      p.lastAction = d.last_action ? { status: d.last_action.status || '', at: (d.last_action.timestamp || 0) * 1000 } : null;
+      p.invalid = false;
+      p.retryAt = 0;
+      const inCountry = st.state === 'Abroad' ? placeOf(st).place : '';
+      if (inCountry) p.lastIn = inCountry;
+      else if (st.state !== 'Hospital') p.lastIn = '';
+      p.place = placeOf(st, p.lastIn);
+      this.trackFlight(p, prev, prevAt, now);
+      // Away from Torn since: the departure we saw, else the first time we saw them away this trip.
+      const away = p.place.place && p.place.place !== 'Torn';
+      if (away && !p.awaySince) p.awaySince = p.flight && p.flight.departLo ? Math.round((p.flight.departLo + p.flight.departHi) / 2) : now;
+      if (!away) p.awaySince = 0;
+      // In hospital abroad: maybe mugged, and then what they had left is protected for up to 12 hours.
+      // Kept across trips from the first sighting of the stay; a "Mugged by" reason confirms it.
+      if (p.place.kind === 'hospital' && p.place.place && p.place.place !== 'Torn' && BY_PLAYER.test(p.status.details)) {
+        const h = p.hosp;
+        const cont = wasHosp && h && h.place === p.place.place && now - h.seen < SAME_STAY;
+        p.hosp = { at: cont ? h.at : now, seen: now, place: p.place.place, text: p.status.details, mugged: /mugg/i.test(p.status.details) || !!(cont && h.mugged) };
+      }
+      delete p.mugged;
+      p.at = now;
+      // On the pasted list but no longer in (or flying to) this country: off the list.
+      const ps = this.pasteFor(trip);
+      if (ps && ps.ids.includes(Number(id)) && !this.near(p, trip.country)) {
+        ps.ids = ps.ids.filter(x => x !== Number(id));
+        ps.left = [{ id: Number(id), name: p.name, at: now, to: p.place.kind === 'flying' ? p.place.place : (p.place.place || '') }, ...ps.left].slice(0, 30);
+        this.pool = null;
+      }
+    } catch (e) {
+      if (e.kind === 'soft') {
+        p.invalid = true; p.at = now; p.error = e.message;
+        const ps = this.pasteFor(trip);
+        if (ps && ps.ids.includes(Number(id))) { ps.ids = ps.ids.filter(x => x !== Number(id)); ps.notFound = [...ps.notFound, `#${id}`].slice(-60); this.pool = null; }
+      } else p.retryAt = now + RETRY;
+    }
+  }
+
+  async fetchJob(id, trip) {
+    const p = this.player(id);
+    try {
+      const d = await this.api.request(`/v2/user/${id}/job`, { soft: [6, 7, 16], priority: 8 });
+      const j = d.job || null;
+      const types = (this.db.data.types && this.db.data.types.clothing) || [];
+      p.job = j && j.type === 'company'
+        ? { trip: trip.key, company: j.name || '', typeId: j.type_id, rating: j.rating || 0, clothing: types.includes(Number(j.type_id)), cruise: ((this.db.data.types && this.db.data.types.cruise) || []).includes(Number(j.type_id)) }
+        : { trip: trip.key, company: '', job: j ? String(j.name || '') : '', rating: 0, clothing: false };
+    } catch (e) {
+      if (e.kind === 'soft') p.job = { trip: trip.key, error: e.message }; else p.retryAt = Date.now() + RETRY;
+    }
+  }
+
+  // Travel record: trips and items bought abroad (all time, per country) and a week ago.
+  async fetchRecord(id, trip) {
+    const p = this.player(id);
+    try {
+      const d = await this.api.request(`/v2/user/${id}/personalstats?cat=travel`, { soft: [6, 7, 16], priority: 8 });
+      const t = (d.personalstats && d.personalstats.travel) || {};
+      const per = {};
+      for (const c of COUNTRIES) per[c.name] = Number(t[COUNTRY_STATS[c.code]]) || 0;
+      const rec = { trip: trip.key, at: Date.now(), now: { trips: Number(t.total) || 0, items: Number(t.items_bought) || 0, defendsLost: Number(t.defends_lost) || 0, attacksWon: Number(t.attacks_won) || 0 }, per, favourite: '', week: null };
+      let n = 0;
+      for (const [name, v] of Object.entries(per)) if (v > n) { n = v; rec.favourite = name; }
+      try {
+        const ts = Math.floor((Date.now() - WEEK) / 1000);
+        const w = await this.api.request(`/v2/user/${id}/personalstats?stat=itemsboughtabroad,traveltimes&timestamp=${ts}`, { soft: [6, 7, 16], priority: 9 });
+        const then = {};
+        for (const x of w.personalstats || []) if (x && x.name) then[x.name] = Number(x.value) || 0;
+        if ('itemsboughtabroad' in then || 'traveltimes' in then) rec.week = { items: Math.max(0, rec.now.items - (then.itemsboughtabroad || 0)), trips: Math.max(0, rec.now.trips - (then.traveltimes || 0)) };
+      } catch (e) { rec.weekError = e.message; }
+      // Fights lost abroad since yesterday (Torn keeps this by day, without the country): a mug is one.
+      try {
+        const ts = Math.floor((Date.now() - DAY) / 1000);
+        const y = await this.api.request(`/v2/user/${id}/personalstats?stat=defendslostabroad&timestamp=${ts}`, { soft: [6, 7, 16], priority: 9 });
+        const x = (y.personalstats || []).find(s => s && s.name === 'defendslostabroad');
+        if (x) rec.lostAbroad = { n: Math.max(0, rec.now.defendsLost - (Number(x.value) || 0)), since: ts * 1000 };
+      } catch (e) { rec.lostError = e.message; }
+      p.rec = rec;
+    } catch (e) {
+      if (e.kind === 'soft') p.rec = { trip: trip.key, at: Date.now(), error: e.message }; else p.retryAt = Date.now() + RETRY;
+    }
+  }
+
+  // Trading stats. The first reading this trip is the baseline: item market revenue (less fees)
+  // added since went into their wallet while they were away.
+  async fetchTrading(id, trip) {
+    const p = this.player(id);
+    try {
+      const d = await this.api.request(`/v2/user/${id}/personalstats?cat=trading`, { soft: [6, 7, 16], priority: 8 });
+      const t = (d.personalstats && d.personalstats.trading) || {};
+      const im = t.item_market || {}, bz = t.bazaar || {};
+      const r = { at: Date.now(), revenue: Number(im.revenue) || 0, fees: Number(im.fees) || 0, imSales: Number(im.sales) || 0, bzSales: Number(bz.sales) || 0, bzCustomers: Number(bz.customers) || 0 };
+      if (!p.trade0 || p.trade0.trip !== trip.key) p.trade0 = { ...r, trip: trip.key };
+      p.trade = r;
+    } catch (e) {
+      if (e.kind === 'soft') p.trade = { at: Date.now(), error: e.message }; else p.retryAt = Date.now() + RETRY;
+    }
+  }
+
+  // Landing window for someone flying (as on the War tab): the departure is caught when they switch
+  // to Traveling between two checks; flight times from the travel table.
+  trackFlight(p, prev, prevAt, now) {
+    const st = p.status;
+    if (st.state !== 'Traveling') { p.flight = null; return; }
+    const t = parseTrip(st.description);
+    if (!t || !t.country) { p.flight = null; return; }
+    if (!p.flight || p.flight.desc !== st.description) {
+      const seen = prev && prev.kind !== 'flying' && prevAt && now - prevAt < 25 * 60e3;
+      p.flight = { desc: st.description, departLo: seen ? prevAt : 0, departHi: now };
+    }
+    const plane = ['private_jet', 'light_aircraft', 'airliner'].includes(st.plane) ? st.plane : '';
+    const f = flightRange(t.country, plane, this.store.get('travel.learned') || {});
+    p.flight.landLo = p.flight.departLo ? p.flight.departLo + f.lo * 0.75 * 0.97 : 0; // a travel book can cut 25%
+    p.flight.landHi = p.flight.departHi + f.hi;
+  }
+
+  // ---- Ticks ----
+  tick(now) {
+    this.mdb.tick(now); // the market database collects whether or not you travel
+    const trip = this.trip();
+    const d = this.db.data;
+    if (trip && (!d.trip || d.trip.key !== trip.key)) { d.trip = { ...trip, startedAt: now }; this.pool = null; this.db.save(); }
+    if (!trip) {
+      if (this.mdb.watchIds.size) this.mdb.watch([]);
+      this.pool = null;
+      return;
+    }
+    // Flying out: the best traders for the country. Landed with a pasted People list: only those people.
+    const mode = this.pasteActive(trip) ? 'paste' : 'pool';
+    if (!this.pool || this.poolMode !== mode || now - (this.poolAt || 0) > 5 * 60e3) {
+      this.pool = mode === 'paste' ? [...this.pasteFor(trip).ids] : this.candidates(trip.country);
+      this.poolMode = mode;
+      this.poolAt = now;
+      this.prune(now);
+      this.updateWatch(trip);
+    }
+    if (!this.api.hasKey() || this.inFlight) return;
+    this.calls = this.calls.filter(t => now - t < 60e3);
+    if (this.calls.length >= this.rate()) return;
+    const job = this.nextJob(now, trip);
+    if (job) this.runJob(job, trip).catch(() => {});
+  }
+
+  // Re-read the bazaars of the players near you every 5 minutes (the items they hold most of).
+  updateWatch(trip) {
+    const items = this.mdb.items();
+    const want = new Map();
+    for (const id of this.pool || []) {
+      const p = this.db.data.players[id];
+      if (!p || p.tripKey !== trip.key || !this.near(p, trip.country)) continue;
+      const info = this.sellerInfo(id, items, trip.country);
+      for (const i of info ? info.items.slice(0, 2) : []) want.set(i.id, (want.get(i.id) || 0) + i.q * i.cost);
+    }
+    this.mdb.watch([...want.entries()].sort((a, b) => b[1] - a[1]).map(e => e[0]));
+  }
+
+  prune(now) {
+    const keep = new Set((this.pool || []).map(String));
+    for (const [id, p] of Object.entries(this.db.data.players)) if (!keep.has(id) && now - (p.at || 0) > PLAYER_KEEP) delete this.db.data.players[id];
+  }
+
+  // FFScouter: the players near you this trip (fetched once each; see the top).
+  ffIds() {
+    const trip = this.trip();
+    if (!trip) return [];
+    return (this.pool || []).filter(id => { const p = this.db.data.players[id]; return p && p.tripKey === trip.key && this.near(p, trip.country) && !this.muggedHere(p, trip.country); }).slice(0, 150);
+  }
+
+  // Check where they are again now (keeps what this trip has learned about them).
+  recheck(id) {
+    for (const [pid, p] of Object.entries(this.db.data.players)) {
+      if (id && Number(pid) !== id) continue;
+      if (p.at) p.at = 1;
+      p.retryAt = 0;
+    }
+    this.poolAt = 0;
+    this.db.save();
+    this.emitSoon();
+  }
+
+  emitSoon() {
+    if (this.emitTimer) return;
+    this.emitTimer = setTimeout(() => { this.emitTimer = null; this.emit('state'); }, 400);
+  }
+
+  // ---- For the page ----
+  snapshot() {
+    const now = Date.now();
+    const country = this.location();
+    const trip = this.trip();
+    const live = this.live();
+    const items = this.mdb.items();
+    const players = this.db.data.players;
+    this.listed = new Set((this.extraIds() || []).map(Number));
+    const rows = [];
+    const mugged = [];
+    const places = {};
+    let checked = 0;
+    if (live) {
+      for (const id of this.pool || []) {
+        const p = players[id];
+        const pr = this.muggedHere(p, country, now);
+        if (pr) { mugged.push({ id, name: p.name || '', level: p.level || 0, at: pr.at, ends: pr.ends, text: pr.text, inHospital: pr.now }); continue; }
+        if (!p || p.tripKey !== trip.key || !p.at) continue;
+        checked++;
+        if (p.place && p.place.place && p.place.place !== 'Torn') {
+          const k = `${p.place.place}${p.place.kind === 'flying' ? '|flying' : ''}`;
+          places[k] = (places[k] || 0) + 1;
+        }
+        if (!this.near(p, country)) continue;
+        const info = this.sellerInfo(id, items, country, now);
+        const rec = p.rec && !p.rec.error ? p.rec : null;
+        rows.push(this.row(id, p, info, rec, this.cashNow(p, info, rec, country, items), country, true));
+      }
+    } else {
+      for (const id of this.candidates(country).slice(0, 40)) {
+        const p = players[id] || null;
+        rows.push(this.row(id, p, this.sellerInfo(id, items, country, now), this.record(id), null, country, false));
+      }
+    }
+    rows.sort((a, b) => b.score.total - a.score.total);
+    return {
+      country, live, trip,
+      choice: String(this.store.get('mugger.location') || 'auto'),
+      db: { ...this.mdb.stats(), scan: this.mdb.scan, remote: this.mdb.remote(), watching: [...this.mdb.watchIds].map(i => (items.get(i) || {}).name || `#${i}`) },
+      pool: (this.pool || []).length, checked, places, rows, mugged: mugged.sort((a, b) => b.at - a.at),
+      poolMode: live ? this.poolMode || 'pool' : 'pool',
+      paste: (() => {
+        const ps = trip ? this.pasteFor(trip) : null;
+        if (!ps) return null;
+        return { count: ps.ids.length, active: this.pasteActive(trip), at: ps.at, lookups: ps.lookups.length, notFound: ps.notFound.slice(-8), notFoundCount: ps.notFound.length, left: ps.left.slice(0, 6), leftCount: ps.left.length, traders: ps.ids.filter(id => this.mdb.seller(id)).length };
+      })(),
+      me: this.db.data.me,
+      mug: { looting: this.looting(), lootingAuto: this.lootingAuto(), merits: this.db.data.merits, plunder: this.plunder(), mult: this.mult() },
+      settings: { minCost: this.minCost(), pool: this.poolSize(), rate: this.rate(), here: this.hereEvery() / 60e3, market: this.marketEvery() / 60e3, looting: this.lootingAuto() ? 'auto' : this.looting(), plunder: this.plunder() },
+      countries: COUNTRIES.map(c => c.name),
+    };
+  }
+
+  row(id, p, info, rec, cash, country, live) {
+    const pt = this.perTrip(rec, p);
+    const restock = info && info.ev.filter(e => e.dq > TRADE_QTY).slice(-1)[0];
+    return {
+      id, name: (p && p.name) || (info && info.name) || '', live,
+      level: p ? p.level : 0, age: p ? p.age : 0, faction: p ? p.faction : null,
+      status: live ? p.status : null, place: live ? p.place : null, flight: live ? p.flight : null,
+      life: live ? p.life : null, lastAction: live ? p.lastAction : null, checkedAt: live ? p.at : 0,
+      awaySince: live ? p.awaySince : 0, protect: live ? this.protection(p, country) : null, job: p ? p.job : null,
+      listed: this.listed.has(id),
+      market: info && {
+        items: info.items.slice(0, 8), small: info.small.slice(0, 6), small30: info.small30, spec: info.spec.slice(0, 4), specCustomers: info.specCustomers, busiest: info.busiest, income: info.income, bulk: info.bulk, bazaar: info.bazaar, value: info.value, listed: info.listed, r30: info.r30, rc30: info.rc30, s30: info.s30, sv30: info.sv30,
+        active: info.active, days: info.days, first: info.first, ev: info.ev, sellsHere: info.sellsHere, rc30Here: info.rc30Here, r30Here: info.r30Here,
+        lastRestock: restock ? { ...restock, trips: pt && pt.n ? restock.dq / pt.n : null } : null,
+      },
+      rec, perTrip: pt, tripCash: this.tripCash(info, rec, country, p), tripUnknown: this.tripUnknown(info, country), cash, take: live ? this.mugTake(cash, p) : null,
+      trade: live && p.trade && !p.trade.error ? { since: p.trade0 ? p.trade0.at : 0, at: p.trade.at } : null,
+      ...(() => { const sc = this.score(info, rec, cash, country); return { score: sc.here, overall: sc.all }; })(),
+    };
+  }
+
+  flush() { this.db.flush(); }
+}
+
+module.exports = { MuggerFeature, placeOf, myTrip, MUG, parsePeople };
+
+  },
+  "features/muggerdb.js": function (module, exports, require) {
+'use strict';
+// Mugger's market database: who sells abroad items in their bazaars, and how their stock moves.
+// Runs on the Mentat server around the clock (data set "mugger", pulled by the apps), or on a device
+// that has no server copy. Keeps 90 days (the user's request, 2026-11-24).
+//
+// Source: Weav3r (https://weav3r.dev, no key), one request per 100 bazaar listings of an item:
+// GET /api/marketplace/{itemId}[?page=N] -> 100 bazaars a page, cheapest first: { listings: [{ player_id,
+// player_name, quantity, price, content_updated, last_checked }], total_count, has_more }. Weav3r
+// re-checks each bazaar every 5-15 minutes. Its docs (TornW3B API, pasted by the user 2026-11-25): full
+// listings are limited per IP to 10 a minute, or 25 with a registered Torn key (X-API-Key header; an
+// unknown key gets 401); over the limit it answers 429 with Retry-After, or (as seen) the 10-row "filler"
+// shape without sellers. The server sends its own key (registered there by the user, who OK'd sending it
+// to weav3r.dev) and reads every page; without a key: one page per item, slower. A list that isn't
+// complete (more pages unread, or an answer without sellers) never marks anyone as sold out.
+// Every 30 minutes this reads every abroad shop item (YATA's list, via the travel feature) that costs
+// at least $50,000 abroad: one request every 6 s with the key (in practice it still switched to sellerless
+// answers at one per 3 s, 2026-11-25), every 7 s without; a sellerless answer slows the pace by half (up to
+// 20 s, remembered), clean passes speed it back up.
+//
+// Per seller:  n name · f first seen · l last seen listing anything
+//   items { itemId: [quantity, price, contentUpdated, seenAt] }   what they list now
+//   days  { 'YYYY-MM-DD' (UTC): { itemId: [restockUnits, restockCost, soldUnits, soldValue, smallRestockUnits] } }
+//         90 days, per item (so scores can be per country); restocks of 5 or fewer go only in
+//         smallRestockUnits. Days kept before 2026-11-25 hold one total for all items (dayItems: item 0).
+//         restockCost = units × abroad shop price; soldValue = units × their price (at most 3× the
+//         abroad price: some bazaars "list" at prices nobody pays, e.g. a $20B Jackhammer)
+//   ev    [[time, itemId, quantityChange, price, gone?]]   the last 3 days, for "sold since they left"
+// A restock is a quantity going up by more than TRADE_QTY between two readings. Players put several trips' worth in at once,
+// so a restock is NOT one trip (mugger.js divides by their items per trip).
+//
+// Torn's bazaar directories (with the collector's own key: the server's, or yours without a server),
+// every 12 hours: /v2/market/{item}/bazaar for each of those items (the top 10 bazaars specialising in
+// it, with weekly customers; checked 2026-11-25: Xanax had 10, 32-4,050 customers a week) and
+// /v2/market/bazaar (weekly top-10 lists: busiest, top grossing, bulk …). Bazaar ids are their owners'
+// player ids. About 73 calls per 12 hours, at the lowest priority.
+//
+// The device also "watches" a few items while you are abroad (the items the players near you sell),
+// reading them every 5 minutes; those readings live in memory (`live`) on top of the database, so a
+// server copy arriving doesn't hide them.
+
+const path = require('path');
+const { EventEmitter } = require('events');
+const { Store } = require('../store');
+
+const WEAV3R = 'https://weav3r.dev/api/marketplace';
+const COLLECT_MIN = 50000;
+const SCAN_EVERY = 30 * 60e3;
+const GAP = 7000; // without a key (Weav3r: 10 a minute)
+const GAP_KEY = 6000; // with the registered key (Weav3r says 25 a minute; 20 was too many in practice)
+const GAP_MAX = 20000; // the slowest the learned pace goes
+const MAX_PAGES = 4; // 400 bazaars: Xanax has ~240
+const KEY_OFF = 3600e3; // Weav3r didn't know the key: go without it for an hour
+const DIR_EVERY = 12 * 3600e3;
+const ANON_PAUSE = 2 * 60e3; // Weav3r answered without sellers: wait, try once more, else stop this scan
+const LIMIT_PAUSE = 60e3;
+const LIMIT_TRIES = 3;
+const KEEP_DAYS = 90;
+const EV_KEEP = 3 * 86400e3;
+const WATCH_EVERY = 5 * 60e3;
+const WATCH_MAX = 10;
+const PRICE_CAP = 3;
+// Selling one or two of an item is no sign of trips (the user's rule, 2026-11-24): only more than 5 of
+// an item counts as trading (stock now, a restock). Smaller ones are still recorded and shown, just not
+// counted. Sales of any size still count as cash on hand.
+const TRADE_QTY = 5;
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const dayKey = t => new Date(t).toISOString().slice(0, 10);
+
+async function getJson(url, key = '') {
+  const headers = { Accept: 'application/json', 'User-Agent': 'Mentat' };
+  if (key) headers['X-API-Key'] = key;
+  const res = await fetch(url, { signal: AbortSignal.timeout(20000), headers });
+  if (res.status === 429) throw Object.assign(new Error('Weav3r rate limit reached'), { retryAfter: Number(res.headers && res.headers.get ? res.headers.get('retry-after') : 0) || 0 });
+  if (res.status === 401 && key) throw Object.assign(new Error('Weav3r does not know the key'), { badKey: true });
+  if (!res.ok) throw new Error(`Weav3r returned HTTP ${res.status}`);
+  return res.json();
+}
+
+// Abroad shop items from the travel feature: id -> { id, name, cost (cheapest), countries }.
+function abroadItems(travel) {
+  const out = new Map();
+  for (const c of (travel && travel.state.countries) || []) {
+    for (const i of c.items || []) {
+      if (!(i.cost > 0)) continue;
+      const e = out.get(i.id) || { id: i.id, name: i.name, cost: i.cost, countries: [] };
+      e.cost = Math.min(e.cost, i.cost);
+      if (!e.countries.includes(c.name)) e.countries.push(c.name);
+      out.set(i.id, e);
+    }
+  }
+  return out;
+}
+
+class MuggerDb extends EventEmitter {
+  constructor({ dataDir, travel, api = null, key = () => '', log = () => {} }) {
+    super();
+    this.key = key; // the registered Torn key for Weav3r (the server's own; '' elsewhere)
+    this.keyOffUntil = 0;
+    this.gapKey = GAP_KEY;
+    this.api = api; // Torn API for the bazaar directories (server key, or yours without a server)
+    this.dirBusy = false;
+    this.dirIndex = null; // pid -> { spec: { itemId: weeklyCustomers }, name, busiest, income, bulk }
+    this.travel = travel;
+    this.log = log;
+    this.db = new Store(path.join(dataDir, 'mugger-db.json'), { v: 1, lastScan: 0, scans: [], itemsSeen: [], sellers: {}, dir: { at: 0, items: {}, weekly: null } }, { debounceMs: 60000 });
+    this.remote = () => false; // a Mentat server collects instead (set by core.js)
+    // A Mentat server is set up: it reads the directories with its own key, so a member's device never
+    // spends theirs on it, even before the server's copy has arrived (core.js).
+    this.useServer = () => false;
+    this.gap = GAP; // between Weav3r requests (tests set 0)
+    this.scan = { running: false, done: 0, total: 0, error: '' };
+    this.lastReq = 0;
+    this.busy = Promise.resolve();
+    this.limits = 0;
+    this.watchIds = new Set();
+    this.watchAt = {};
+    this.live = {}; // pid -> { items: { id: [q, p, upd, seen] }, ev: [...] } from watched items
+  }
+
+  items() { return abroadItems(this.travel); }
+
+  // One Weav3r request at a time, at least `gap` apart (scans and watches share it).
+  keyNow() { return Date.now() >= this.keyOffUntil ? String(this.key() || '') : ''; }
+  // The pace: the base gap, or slower if Weav3r has answered without sellers lately (db.data.pace).
+  gapNow() {
+    const base = this.keyNow() ? this.gapKey : this.gap;
+    return base ? Math.max(base, Math.min(GAP_MAX, Number(this.db.data.pace) || 0)) : 0;
+  }
+  slower() { if (this.gap) { this.db.data.pace = Math.min(GAP_MAX, Math.round(this.gapNow() * 1.5)); this.db.save(); } }
+  faster() { if (this.db.data.pace) { const p = Math.round(this.db.data.pace * 0.9); this.db.data.pace = p <= (this.keyNow() ? this.gapKey : this.gap) ? 0 : p; this.db.save(); } }
+
+  request(url) {
+    const run = async () => {
+      const wait = this.lastReq + this.gapNow() - Date.now();
+      if (wait > 0) await sleep(wait);
+      for (;;) {
+        this.lastReq = Date.now();
+        const key = this.keyNow();
+        try { return await getJson(url, key); } catch (e) {
+          if (e.badKey) { this.keyOffUntil = Date.now() + KEY_OFF; this.log('Mugger: Weav3r does not know the server key (register it at weav3r.dev); reading without it for an hour.'); continue; }
+          if (!/rate limit/i.test(e.message) || ++this.limits > LIMIT_TRIES) throw e;
+          this.scan.error = 'Weav3r asked to slow down; waiting';
+          this.emit('state');
+          await sleep(this.gap ? Math.max(LIMIT_PAUSE, (e.retryAfter || 0) * 1000) : 0);
+          this.scan.error = '';
+        }
+      }
+    };
+    const p = this.busy.then(run, run);
+    this.busy = p.catch(() => {});
+    return p;
+  }
+
+  // One item's bazaars, cheapest first: every page with the key, the first 100 without. complete = all of
+  // them were read. Listings without a seller (an answer in the anonymous shape) are left out, and then
+  // the list doesn't count as complete either.
+  async readItem(id) {
+    const listings = [];
+    const pages = this.keyNow() ? MAX_PAGES : 1;
+    for (let page = 1; page <= pages; page++) {
+      if (page > 1 && !this.keyNow()) return { listings, complete: false }; // the key went off: first page only
+      const d = await this.request(page === 1 ? `${WEAV3R}/${id}` : `${WEAV3R}/${id}?page=${page}`);
+      const all = Array.isArray(d.listings) ? d.listings : [];
+      const mine = all.filter(l => Number(l.player_id) > 0);
+      listings.push(...mine);
+      if (all.length && !mine.length) return { listings, anon: page === 1, complete: false };
+      if (mine.length !== all.length || d.has_more === undefined) return { listings, complete: false };
+      if (!d.has_more) return { listings, complete: true };
+    }
+    return { listings, complete: false };
+  }
+
+  // ---- The 30-minute scan ----
+  async runScan() {
+    const items = [...this.items().values()].filter(i => i.cost >= COLLECT_MIN).sort((a, b) => b.cost - a.cost);
+    const scan = this.scan = { running: true, done: 0, total: items.length, error: '', startedAt: Date.now() };
+    this.limits = 0;
+    this.db.data.lastScan = Date.now();
+    this.emit('state');
+    const sellers = this.db.data.sellers;
+    const known = new Set(this.db.data.itemsSeen || []);
+    const started = Date.now();
+    let errors = 0, listings = 0;
+    let anonStop = false, slowed = 0;
+    for (const item of items) {
+      if (anonStop) break;
+      try {
+        let r = await this.readItem(item.id);
+        if (r.anon) {
+          // No sellers in the answer: over Weav3r's limit. Slow down, wait, try once more, else stop.
+          this.slower();
+          slowed++;
+          scan.error = 'Weav3r is answering without sellers; slowing down and waiting 2 minutes';
+          this.emit('state');
+          await sleep(this.gap ? ANON_PAUSE : 0);
+          r = await this.readItem(item.id);
+          if (r.anon) { this.slower(); scan.error = 'Weav3r answered without sellers: stopped this read, trying again at the next one'; errors++; anonStop = true; }
+          else scan.error = '';
+        }
+        for (const l of r.listings) this.record(sellers, item, l, { known: known.has(item.id), started });
+        listings += r.listings.length;
+        if (r.complete) {
+          this.sweep(sellers, item, started);
+          known.add(item.id);
+        }
+      } catch (e) {
+        errors++;
+        scan.error = e.name === 'TimeoutError' ? 'Weav3r timed out' : e.message || 'Could not reach Weav3r';
+        if (/rate limit/i.test(scan.error)) break; // the next scan tries again
+      }
+      scan.done++;
+      if (scan.done % 5 === 0) this.emit('state');
+    }
+    this.prune(Date.now());
+    this.db.data.itemsSeen = [...known];
+    this.db.data.scans = [...(this.db.data.scans || []), { at: started, took: Date.now() - started, items: scan.done, of: items.length, listings, sellers: Object.keys(sellers).length, errors, pace: Math.round(this.gapNow() / 1000) }].slice(-60);
+    this.db.save();
+    scan.running = false;
+    if (anonStop) this.log && this.log(`Mugger: Weav3r answered without sellers; stopped this read, trying again in 30 minutes (pace now ${Math.round(this.gapNow() / 1000)} s).`);
+    else if (!slowed) this.faster();
+    else this.log && this.log(`Mugger: Weav3r asked for a slower pace; now one request every ${Math.round(this.gapNow() / 1000)} s.`);
+    if (!errors) scan.error = '';
+    this.emit('state');
+    this.emit('scanned');
+  }
+
+  // A complete list without someone who had this item: it sold out (or was taken down).
+  sweep(sellers, item, started) {
+    for (const s of Object.values(sellers)) {
+      const it = s.items[item.id];
+      if (it && it[3] < started) {
+        if (it[0] > 0) this.change(s, Date.now(), item, -it[0], it[1], 1);
+        delete s.items[item.id];
+      }
+    }
+  }
+
+  // One listing { player_id, player_name, quantity, price, content_updated }.
+  record(sellers, item, l, { known, started }) {
+    const pid = Number(l.player_id);
+    if (!pid) return;
+    const now = Date.now();
+    const s = sellers[pid] || (sellers[pid] = { n: '', f: now, l: now, items: {}, days: {}, ev: [] });
+    s.n = l.player_name || s.n;
+    s.l = now;
+    const upd = (Number(l.content_updated) || 0) * 1000;
+    const q = Number(l.quantity) || 0, p = Number(l.price) || 0;
+    const it = s.items[item.id];
+    if (it && it[0] !== q) this.change(s, upd > it[2] ? upd : now, item, q - it[0], p || it[1]);
+    // A seller we knew adding an item we've read before: a restock (a new seller's stock isn't one).
+    else if (!it && known && s.f < started && q > 0) this.change(s, upd || now, item, q, p);
+    s.items[item.id] = [q, p, upd, now];
+    if (q > 0) noteHistory(s, item.id, now, q);
+  }
+
+  change(s, t, item, dq, price, gone = 0) {
+    s.ev.push([t, item.id, dq, price, gone]);
+    let day = s.days[dayKey(t)];
+    if (!day) day = s.days[dayKey(t)] = {};
+    else if (Array.isArray(day)) day = s.days[dayKey(t)] = { 0: day }; // an old all-items total
+    const d = day[item.id] || (day[item.id] = [0, 0, 0, 0, 0]);
+    if (dq > TRADE_QTY) { d[0] += dq; d[1] += dq * item.cost; } else if (dq > 0) { d[4] = (d[4] || 0) + dq; } else { d[2] += -dq; d[3] += -dq * Math.min(price, item.cost * PRICE_CAP); }
+  }
+
+  prune(now) {
+    const oldest = dayKey(now - KEEP_DAYS * 86400e3);
+    for (const [pid, s] of Object.entries(this.db.data.sellers)) {
+      s.ev = s.ev.filter(e => now - e[0] < EV_KEEP);
+      for (const k of Object.keys(s.days)) if (k < oldest) delete s.days[k];
+      for (const [id, h] of Object.entries(s.h || {})) if (now - h[1] > KEEP_DAYS * 86400e3) delete s.h[id];
+      if (!Object.keys(s.items).length && !Object.keys(s.days).length && !Object.keys(s.h || {}).length) delete this.db.data.sellers[pid];
+    }
+  }
+
+  // ---- Watched items (while you're abroad) ----
+  watch(ids) {
+    this.watchIds = new Set([...ids].map(Number).filter(Boolean).slice(0, WATCH_MAX));
+  }
+
+  async readWatched(item) {
+    this.watchAt[item.id] = Date.now();
+    try {
+      const r = await this.readItem(item.id);
+      const started = this.watchAt[item.id];
+      const seen = new Set();
+      for (const l of r.listings) {
+        const pid = Number(l.player_id);
+        if (!pid) continue;
+        seen.add(pid);
+        const base = this.db.data.sellers[pid];
+        const lv = this.live[pid] || (this.live[pid] = { items: {}, ev: [] });
+        const prev = lv.items[item.id] || (base && base.items[item.id]);
+        const q = Number(l.quantity) || 0, p = Number(l.price) || 0, upd = (Number(l.content_updated) || 0) * 1000;
+        if (prev && prev[0] !== q) lv.ev.push([upd > prev[2] ? upd : Date.now(), item.id, q - prev[0], p || prev[1], 0]);
+        lv.items[item.id] = [q, p, upd, Date.now()];
+      }
+      if (r.complete) {
+        for (const [pid, lv] of Object.entries(this.live)) {
+          const prev = lv.items[item.id];
+          if (prev && prev[3] < started && !seen.has(Number(pid))) {
+            if (prev[0] > 0) lv.ev.push([Date.now(), item.id, -prev[0], prev[1], 1]);
+            delete lv.items[item.id];
+          }
+        }
+        // Someone who had it in the database and not now.
+        for (const [pid, s] of Object.entries(this.db.data.sellers)) {
+          if (!s.items[item.id] || seen.has(Number(pid)) || (this.live[pid] && (this.live[pid].ev.some(e => e[1] === item.id && e[4]) || this.live[pid].items[item.id]))) continue;
+          const lv = this.live[pid] || (this.live[pid] = { items: {}, ev: [] });
+          if (s.items[item.id][0] > 0) lv.ev.push([Date.now(), item.id, -s.items[item.id][0], s.items[item.id][1], 1]);
+        }
+      }
+      this.emit('live');
+    } catch (e) { /* tried again in 5 minutes */ }
+  }
+
+  // ---- Reading ----
+  // A seller's listings and recent changes: the database with the watched readings on top.
+  seller(pid) {
+    const s = this.db.data.sellers[pid];
+    const lv = this.live[pid];
+    const dir = this.dirOf(pid);
+    if (!s && !lv && !dir) return null;
+    const items = { ...(s ? s.items : {}), ...(lv ? lv.items : {}) };
+    const now = Date.now();
+    // A change both the watch and a scan saw (same item and amount within 30 minutes) counts once.
+    const base = s ? s.ev : [];
+    const extra = lv ? lv.ev.filter(e => now - e[0] < EV_KEEP && !base.some(b => b[1] === e[1] && b[2] === e[2] && Math.abs(b[0] - e[0]) < 30 * 60e3)) : [];
+    const ev = [...base, ...extra].sort((a, b) => a[0] - b[0]);
+    if (s && !s.h) backfillHistory(s);
+    return { name: s ? s.n : '', first: s ? s.f : 0, items, days: s ? s.days : {}, ev, dir, h: s ? s.h : {} };
+  }
+
+  sellerIds() { return [...new Set([...Object.keys(this.db.data.sellers), ...Object.keys(this.index())].map(Number))]; }
+
+  // ---- Torn's bazaar directories ----
+  index() {
+    if (this.dirIndex) return this.dirIndex;
+    const out = {};
+    const d = this.db.data.dir || {};
+    const at = pid => out[pid] || (out[pid] = { spec: {}, name: '', busiest: 0, income: 0, bulk: 0 });
+    for (const [id, x] of Object.entries(d.items || {})) for (const [pid, customers, , name] of x.list || []) { const e = at(pid); e.spec[id] = customers; e.name = e.name || name; }
+    const w = d.weekly;
+    if (w) for (const [k, field] of [['busiest', 'busiest'], ['top_grossing', 'income'], ['bulk', 'bulk']]) for (const [pid, n, name] of w[k] || []) { const e = at(pid); e[field] = n; e.name = e.name || name; }
+    return (this.dirIndex = out);
+  }
+  dirOf(pid) { return this.index()[pid] || null; }
+
+  // Trader names (lower case) -> player id, from the listings and the directories; rebuilt every 10 minutes.
+  nameIndex() {
+    if (this.nameIdx && Date.now() - this.nameIdxAt < 10 * 60e3) return this.nameIdx;
+    const m = new Map();
+    for (const [pid, e] of Object.entries(this.index())) if (e && e.name) m.set(String(e.name).toLowerCase(), Number(pid));
+    for (const [pid, s] of Object.entries(this.db.data.sellers || {})) if (s && s.n) m.set(String(s.n).toLowerCase(), Number(pid));
+    this.nameIdx = m;
+    this.nameIdxAt = Date.now();
+    return m;
+  }
+
+  async readDirectories() {
+    this.dirBusy = true;
+    const d = this.db.data.dir || (this.db.data.dir = { at: 0, items: {}, weekly: null });
+    d.at = Date.now(); // also stops a second run while this one goes
+    try {
+      const items = [...this.items().values()].filter(i => i.cost >= COLLECT_MIN);
+      const fresh = {};
+      for (const item of items) {
+        try {
+          const r = await this.api.request(`/v2/market/${item.id}/bazaar`, { soft: [6, 7, 16], priority: 9 });
+          const list = ((r.bazaar && r.bazaar.specialized) || []).map(b => [Number(b.id), Number(b.weekly_customers) || 0, !!b.is_open, String(b.name || '')]).filter(b => b[0] > 0);
+          fresh[item.id] = { at: Date.now(), list };
+        } catch (e) { if (e.kind === 'paused' || e.kind === 'nokey' || e.kind === 'key') throw e; }
+      }
+      if (Object.keys(fresh).length) d.items = fresh;
+      const w = await this.api.request('/v2/market/bazaar', { soft: [6, 7, 16], priority: 9 });
+      const b = w.bazaar || {};
+      const rows = (list, field) => (list || []).map(x => [Number(x.id), Number(x[field]) || 0, String(x.name || '')]).filter(x => x[0] > 0);
+      d.weekly = { at: Date.now(), busiest: rows(b.busiest, 'weekly_customers'), top_grossing: rows(b.top_grossing, 'weekly_income'), bulk: rows(b.bulk, 'bulk_sales') };
+      this.dirIndex = null;
+      this.db.save();
+      this.emit('state');
+    } catch (e) {
+      d.at = Date.now() - DIR_EVERY + 30 * 60e3; // try again in 30 minutes
+    } finally {
+      this.dirBusy = false;
+    }
+  }
+
+  stats() {
+    const ds = new Set();
+    for (const s of Object.values(this.db.data.sellers)) for (const k of Object.keys(s.days)) ds.add(k);
+    const scans = this.db.data.scans || [];
+    const dir = this.db.data.dir || {};
+    return { dirAt: dir.at || 0, dirBazaars: Object.keys(this.index()).length, sellers: Object.keys(this.db.data.sellers).length, days: ds.size, oldest: [...ds].sort()[0] || '', lastScan: this.db.data.lastScan || 0, last: scans[scans.length - 1] || null };
+  }
+
+  // ---- Ticks ----
+  tick(now) {
+    const haveItems = this.travel && this.travel.state.countries.some(c => c.items && c.items.length);
+    if (!haveItems) return;
+    if (!this.remote() && !this.scan.running && now - (this.db.data.lastScan || 0) >= SCAN_EVERY) {
+      this.runScan().catch(e => { this.scan.running = false; this.scan.error = e.message; this.log('Mugger scan:', e.message); });
+    }
+    const dir = this.db.data.dir || {};
+    if (this.api && this.api.hasKey() && !this.remote() && !this.useServer() && !this.dirBusy && now - (dir.at || 0) >= DIR_EVERY) this.readDirectories().catch(() => { this.dirBusy = false; });
+    if (this.watchIds.size && !this.watching) {
+      const items = this.items();
+      const due = [...this.watchIds].map(id => items.get(id)).filter(i => i && now - (this.watchAt[i.id] || 0) >= WATCH_EVERY);
+      if (due.length) {
+        this.watching = true;
+        (async () => { for (const i of due) await this.readWatched(i); })().finally(() => { this.watching = false; });
+      }
+    }
+  }
+
+  // The server's copy replaces this device's (the server collects around the clock).
+  applyRemote(data) {
+    if (!data || typeof data !== 'object' || !data.sellers) return;
+    this.db.data = { v: 1, lastScan: 0, scans: [], itemsSeen: [], dir: { at: 0, items: {}, weekly: null }, ...data };
+    this.dirIndex = null;
+    this.db.save();
+    this.emit('state');
+  }
+
+  flush() { this.db.flush(); }
+}
+
+// ---- Analysis shared by the app (mugger.js), the server's route for the Mugger userscript, and
+// (copied) the userscript itself ----
+const clamp = x => Math.max(0, Math.min(1, Number.isFinite(x) ? x : 0));
+const log10 = x => (x > 0 ? Math.log10(x) : 0);
+
+function traderInfo(s, items, country, minCost, now = Date.now()) {
+  if (!s) return null;
+  const here = id => { const m = items.get(Number(id)); return !!m && m.countries.includes(country); };
+  const list = [], small = [];
+  let value = 0, valueHere = 0, units = 0, listed = 0;
+  for (const [id, it] of Object.entries(s.items)) {
+    const meta = items.get(Number(id));
+    if (!meta || !(it[0] > 0) || meta.cost < minCost) continue;
+    // 5 or fewer: shown, but not counted as trading.
+    if (it[0] <= TRADE_QTY) { small.push({ id: Number(id), name: meta.name, q: it[0], price: it[1], cost: meta.cost, countries: meta.countries, upd: it[2], small: true }); continue; }
+    value += it[0] * meta.cost;
+    if (meta.countries.includes(country)) valueHere += it[0] * meta.cost;
+    listed += it[0] * it[1];
+    units += it[0];
+    list.push({ id: Number(id), name: meta.name, q: it[0], price: it[1], cost: meta.cost, countries: meta.countries, upd: it[2] });
+  }
+  list.sort((a, b) => b.q * b.cost - a.q * a.cost);
+  // The last 30 days, per item (item 0 = totals from before they were kept per item: overall only).
+  const from30 = dayKey(now - 30 * 86400e3);
+  let r30 = 0, rc30 = 0, s30 = 0, sv30 = 0, small30 = 0, rc30Here = 0, r30Here = 0, active = 0, days = 0;
+  for (const [k, day] of Object.entries(s.days || {})) {
+    days++;
+    if (k < from30) continue;
+    let any = false;
+    for (const [id, d] of Object.entries(dayItems(day))) {
+      r30 += d[0]; rc30 += d[1]; s30 += d[2]; sv30 += d[3]; small30 += d[4] || 0;
+      if (d[0] || d[2]) any = true;
+      if (Number(id) && here(id)) { rc30Here += d[1]; r30Here += d[0]; }
+    }
+    if (any) active++;
+  }
+  // Torn's bazaar directory: abroad items their bazaar specialises in (weekly customers), weekly lists.
+  const dir = s.dir || null;
+  const spec = [];
+  for (const [id, customers] of Object.entries((dir && dir.spec) || {})) {
+    const meta = items.get(Number(id));
+    if (meta && meta.cost >= minCost) spec.push({ id: Number(id), name: meta.name, customers, cost: meta.cost, countries: meta.countries });
+  }
+  spec.sort((a, b) => b.customers - a.customers);
+  const specCustomers = spec.reduce((a, x) => a + x.customers, 0);
+  const specHere = spec.filter(x => x.countries.includes(country)).reduce((a, x) => a + x.customers, 0);
+  const sellsHere = list.some(i => i.countries.includes(country)) || spec.some(i => i.countries.includes(country));
+  // Every change is listed; restocks of 5 or fewer are marked small (not counted as trips).
+  const ev = (s.ev || []).slice(-15).map(e => { const m = items.get(e[1]); return { at: e[0], id: e[1], name: m ? m.name : `#${e[1]}`, dq: e[2], price: e[3], cost: m ? m.cost : 0, gone: !!e[4], small: e[2] > 0 && e[2] <= TRADE_QTY, here: !!m && m.countries.includes(country) }; });
+  return {
+    name: s.name || (dir && dir.name) || '', bazaar: dir ? dir.name : '', spec, specCustomers, specHere,
+    busiest: dir ? dir.busiest : 0, income: dir ? dir.income : 0, bulk: dir ? dir.bulk : 0, first: s.first,
+    items: list, small, value, valueHere, listed, units, r30, rc30, r30Here, rc30Here, s30, sv30, small30, active, days, sellsHere, ev, raw: s,
+    hist: tradeHistory(s, items),
+  };
+}
+// Every abroad item a seller has listed in the last 90 days (from 2026-11-25): s.h = { itemId: [firstSeen,
+// lastSeen, mostListed] }. What they trade from a country is judged from this, their restocks and Torn's
+// bazaar directory, not only what's in their bazaar right now (the user's rule, 2026-11-25).
+function noteHistory(s, id, t, q) {
+  const hs = s.h || (s.h = {});
+  const h = hs[id];
+  hs[id] = h ? [Math.min(h[0], t), Math.max(h[1], t), Math.max(h[2], q)] : [t, t, q];
+}
+// Sellers saved before s.h existed: fill it from what's kept (listings now, per-item days, recent changes).
+function backfillHistory(s) {
+  if (s.h) return;
+  s.h = {};
+  for (const [id, it] of Object.entries(s.items || {})) if (it[0] > 0) noteHistory(s, Number(id), it[3] || it[2] || s.l || Date.now(), it[0]);
+  for (const [k, day] of Object.entries(s.days || {})) {
+    const t = Date.parse(`${k}T12:00:00Z`) || Date.now();
+    for (const [id, d] of Object.entries(dayItems(day))) if (Number(id) && (d[0] || d[2])) noteHistory(s, Number(id), t, Math.max(d[0], d[2]));
+  }
+  for (const e of s.ev || []) if (e[2]) noteHistory(s, e[1], e[0], Math.abs(e[2]));
+}
+// What a seller has traded, item by item: the most they've listed at once and their restocks (90 days).
+// Only more than TRADE_QTY counts as trading (the user's rule, 2026-11-24).
+function tradeHistory(s, items) {
+  const out = new Map();
+  for (const [id, h] of Object.entries(s.h || {})) out.set(Number(id), { most: h[2], restocked: 0, last: h[1] });
+  for (const [k, day] of Object.entries(s.days || {})) {
+    for (const [id, d] of Object.entries(dayItems(day))) {
+      if (!Number(id) || !d[0]) continue;
+      const e = out.get(Number(id)) || { most: 0, restocked: 0, last: 0 };
+      e.restocked += d[0];
+      out.set(Number(id), e);
+    }
+  }
+  const list = [];
+  for (const [id, e] of out) {
+    const m = items.get(id);
+    if (!m || (e.most <= TRADE_QTY && !e.restocked)) continue;
+    list.push({ id, name: m.name, cost: m.cost, countries: m.countries, q: Math.max(e.most, e.restocked), last: e.last });
+  }
+  return list.sort((a, b) => b.q - a.q);
+}
+// A day's totals by item: { itemId: [restockUnits, restockCost, soldUnits, soldValue, smallRestockUnits] }.
+// Days saved before 2026-11-25 hold one total for all items: item 0.
+const dayItems = day => (Array.isArray(day) ? { 0: day } : day || {});
+
+// Two scores (the user's request, 2026-11-25), each 0-100:
+// For this country: Trading (up to 30): restocks in the last 30 days of items sold here, at abroad prices,
+//   per week ($1M = 0 … $1B = 30). Stock (10): those items in their bazaar now. Bazaar activity (10):
+//   weekly customers in Torn's bazaar directory for items sold here they specialise in (2,000 = 10).
+//   Fits here (15): sells or specialises in something sold here (15), else it's where they travel most
+//   (10), else they have trips here (5). Travel (15): items bought abroad last week × their share of
+//   trips that go here (1,500 = 15). Cash (20): estimated cash on hand ($1M = 0 … $1B = 20), while you're there.
+// Overall: the same parts over every abroad item (the busiest-bazaars list counts too), without fit,
+//   scaled from 85 to 100.
+function scores(info, rec, cash, country) {
+  const H = { trading: 0, stock: 0, activity: 0, fit: 0, travel: 0, cash: 0 };
+  const A = { trading: 0, stock: 0, activity: 0, travel: 0, cash: 0 };
+  const per = rec && rec.per ? rec.per : null;
+  const tripsHere = per ? per[country] || 0 : 0;
+  if (info) {
+    H.trading = 30 * clamp((log10(info.rc30Here / (30 / 7)) - 6) / 3);
+    H.stock = 10 * clamp((log10(info.valueHere) - 6) / 3);
+    H.activity = 10 * clamp(log10(1 + (info.specHere || 0)) / log10(2001));
+    A.trading = 30 * clamp((log10(info.rc30 / (30 / 7)) - 6) / 3);
+    A.stock = 10 * clamp((log10(info.value) - 6) / 3);
+    const abroad = info.items.length || (info.spec && info.spec.length);
+    A.activity = 10 * clamp(log10(1 + Math.max(info.specCustomers || 0, abroad ? info.busiest || 0 : 0)) / log10(2001));
+  }
+  H.fit = info && info.sellsHere ? 15 : rec && rec.favourite === country ? 10 : tripsHere > 0 ? 5 : 0;
+  if (rec && rec.week) {
+    const share = per && rec.now && rec.now.trips > 0 ? tripsHere / rec.now.trips : 0;
+    H.travel = 15 * clamp(log10(1 + rec.week.items * share) / log10(1501));
+    A.travel = 15 * clamp(log10(1 + rec.week.items) / log10(1501));
+  }
+  if (cash) H.cash = A.cash = 20 * clamp((log10(cash.total) - 6) / 3);
+  const sum = p => Object.values(p).reduce((a, x) => a + x, 0);
+  return { here: { total: Math.round(sum(H)), parts: H }, all: { total: Math.round(sum(A) * 100 / 85), parts: A } };
+}
+
+// Linked to the country: sells or specialises in something sold there, or has trips there.
+const linked = (info, rec, country) => !!(info && info.sellsHere) || !!(rec && rec.per && rec.per[country] > 0);
+
+// Everyone the database knows as a trader, with both scores (no travel record or cash unless given).
+function allTraders(mdb, country, minCost, recordOf = () => null) {
+  const items = mdb.items();
+  const out = [];
+  for (const pid of mdb.sellerIds()) {
+    const info = traderInfo(mdb.seller(pid), items, country, minCost);
+    if (!info || (!info.items.length && !info.rc30 && !info.spec.length)) continue;
+    const rec = recordOf(pid);
+    const sc = scores(info, rec, null, country);
+    out.push({ id: pid, info, here: sc.here.total, all: sc.all.total, linked: linked(info, rec, country) });
+  }
+  return out;
+}
+
+// The pool for a country: two thirds the best for this country (linked to it), the rest the best
+// overall not already in, so a big trader who happens to be there can still be found.
+function rankTraders(mdb, country, minCost, n, recordOf = () => null) {
+  const all = allTraders(mdb, country, minCost, recordOf);
+  const byHere = all.filter(x => x.linked && x.here > 0).sort((a, b) => b.here - a.here).slice(0, Math.ceil(n * 2 / 3));
+  const taken = new Set(byHere.map(x => x.id));
+  const byAll = all.filter(x => !taken.has(x.id) && x.all > 0).sort((a, b) => b.all - a.all).slice(0, n - byHere.length);
+  return [...byHere, ...byAll];
+}
+
+module.exports = { MuggerDb, abroadItems, dayKey, dayItems, COLLECT_MIN, TRADE_QTY, traderInfo, scores, linked, allTraders, rankTraders };
+
+  },
   "features/planner.js": function (module, exports, require) {
 'use strict';
 // Planner: your plan for the next few days (trips, gym, crimes, boosts, blood bags, notes),
@@ -5829,7 +7242,7 @@ class UserFeature extends EventEmitter {
         status: { state: s.state || '', description: s.description || '', details: s.details || '', color: s.color || '', until: local(s.until) },
         bars: limited ? null : { energy: bar(d.energy), nerve: bar(d.nerve), happy: bar(d.happy), life: bar(d.life) },
         cooldowns: limited ? null : { drug: at + (cd.drug || 0) * 1000, booster: at + (cd.booster || 0) * 1000, medical: at + (cd.medical || 0) * 1000 },
-        travel: tr && tr.destination ? { destination: tr.destination, method: tr.method || '', arriveAt: at + (tr.time_left || 0) * 1000, departedAt: local(tr.departed) } : null,
+        travel: tr && tr.destination ? { destination: tr.destination, method: tr.method || '', arriveAt: at + (tr.time_left || 0) * 1000, departedAt: local(tr.departed), departed: tr.departed || 0 } : null,
         refills: rf ? { energy: !!rf.energy_refill_used, nerve: !!rf.nerve_refill_used, token: !!rf.token_refill_used } : null,
         notifications: n ? { messages: n.messages || 0, events: n.events || 0, awards: n.awards || 0 } : null,
       },
@@ -6366,7 +7779,7 @@ class WarFeature extends EventEmitter {
   }
 }
 
-module.exports = { WarFeature, counts, member };
+module.exports = { WarFeature, counts, member, parseTrip, flightRange, COUNTRY_BY_NAME };
 
   },
   "features/warreport.js": function (module, exports, require) {

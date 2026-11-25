@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Mentat Mugger</title>
+  <meta name="description" content="Mug targets where you are abroad: traders near you, their estimated cash on hand, what a mug would take, and the fight. For Torn PDA and browsers.">
+  <link rel="icon" href="/assets/mentat-mark.png">
+  <style>
+    :root { --bg: #181614; --card: #221f1b; --line: #3a342c; --text: #ece4d8; --muted: #b3a795; --accent: #d9aa5a; --accent-2: #9a6a1f; --ok: #8fd17f; }
+    @media (prefers-color-scheme: light) { :root { --bg: #f4efe6; --card: #fffdf9; --line: #ddd2c0; --text: #2a2219; --muted: #5f503d; --accent: #7a4e0c; --accent-2: #8a5a10; --ok: #2f7d32; } }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.55 -apple-system, "Segoe UI", Roboto, sans-serif; }
+    main { max-width: 680px; margin: 0 auto; padding: 24px 16px 48px; }
+    header { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+    header img { width: 34px; height: auto; }
+    h1 { margin: 0; font-size: 24px; letter-spacing: .02em; }
+    h2 { font-size: 18px; margin: 28px 0 8px; }
+    p { margin: 8px 0; }
+    .lead { color: var(--muted); margin-top: 0; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin: 12px 0; }
+    ol, ul { padding-left: 22px; margin: 8px 0; }
+    li { margin: 8px 0; }
+    .path { color: var(--accent); font-weight: 600; }
+    .url { display: flex; gap: 8px; margin: 10px 0 4px; }
+    .url input { flex: 1; min-width: 0; padding: 11px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--text); font: 14px ui-monospace, Consolas, monospace; }
+    button, .button { display: inline-block; padding: 11px 14px; border-radius: 8px; border: 1px solid var(--accent-2); background: var(--accent-2); color: #fff; font: 600 15px inherit; font-family: inherit; text-decoration: none; }
+    .copied { color: var(--ok); font-size: 14px; min-height: 1.4em; }
+    .muted { color: var(--muted); font-size: 14px; }
+    a { color: var(--accent); }
+    table.tos { width: 100%; border-collapse: collapse; font-size: 14px; }
+    table.tos th { text-align: left; padding: 4px 8px 4px 0; vertical-align: top; }
+    table.tos td { padding: 4px 0; }
+    .wip { padding: 8px 12px; border: 1px dashed #e0912d; border-radius: 8px; color: #e0912d; font-weight: 700; text-align: center; }
+    footer { margin-top: 32px; color: var(--muted); font-size: 13px; }
+  </style>
+</head>
+<body>
+<main>
+  <header><img src="/assets/mentat-mark.png" alt=""><h1>Mentat Mugger</h1></header>
+  <p class="wip">Work In Progress</p>
+  <p class="lead">A button over your Torn pages that opens Mugger: while you're flying out or abroad, the players in (or flying to) that country who trade costly abroad items, with their estimated cash on hand, what a mug would take, and the fight. Works in Torn PDA, desktop browsers and Safari on iPad/iPhone. For members of the faction's Mentat server.</p>
+
+  <h2>What it does</h2>
+  <div class="card">
+    <ul>
+      <li><b>Who trades:</b> your Mentat server keeps a 90-day market database of bazaar listings of abroad items (from Weav3r, every 30 minutes): who sells them, how much, and when they restock or sell. Torn's own bazaar directories add the busiest bazaars for each abroad item and their weekly customers (every 12 hours, with the server's key). A restock of thousands of items counts as several trips, not one, and only more than 5 of an item counts as trading: someone selling one or two isn't assumed to be doing trips (smaller listings and restocks are still shown, marked as not counted).</li>
+      <li><b>Only abroad:</b> players in Torn can bank their money, so Mugger only looks at players abroad. It starts once you fly out: the best traders for your destination are looked up on Torn with <b>your own API key</b> to see who is there or flying there.</li>
+      <li><b>Cash on hand (estimate):</b> their trip money while they're still flying out, plus bazaar and item market sales since they left Torn (that money goes to their wallet). Their bazaars are re-read every 5 minutes and their item market revenue every 5 minutes (you can make it 2 or 10) while they're in your country. What they had before isn't known.</li>
+      <li><b>Mug take:</b> from the Torn wiki: 5% of cash on hand, rolled up to 10% (low rolls far likelier), × (1 + Masterful Looting + Plunder). Your Masterful Looting is read from your merits; set your weapon's Plunder in Settings. Players at a <b>7★ Clothing Store</b> are flagged (mugs take 75% less), and so is anyone seen in hospital in your trip's country in the last 12 hours: <i>mugged</i> when the hospital reason says so, otherwise <i>may be mug-protected</i> (a mug protects what is left in their wallet, decaying over 12 hours). Torn only shows a hospital stay while it lasts, so players who were out before you started watching are caught by their "fights lost abroad" count instead (<i>lost N abroad</i>): Torn keeps it by day and doesn't say which country.</li>
+      <li><b>Two scores:</b> one for the country you're in (only items sold there count, plus whether they sell there or travel there), and one overall (every abroad item). Sort by either. Two thirds of the traders checked on a trip are the best for that country; the rest are the best overall, in case a big trader happens to be there.</li>
+      <li><b>The fight:</b> your battle stats against FFScouter's estimate of theirs, and fair fight, with your own FFScouter key (optional), once per player per trip.</li>
+      <li><b>Who's actually there (paste the People list):</b> once you've landed, open Torn's People list for the country, select it and copy it, then paste it into the box in Mugger (a page at a time if there are several) and press <i>Add to the list</i>. From then on Mugger checks only those people, traders or not, and drops anyone who flies out. Copied with the links, every player comes with their ID; as plain text, names are matched against the market database first and otherwise looked up with Torn's player search (one call per name, with your key). Mugger never reads Torn's pages itself: you copy the list. <i>Clear list</i> goes back to the best traders, and a new trip starts without a list.</li>
+      <li><b>In Torn:</b> no API calls; Mugger shows a preview of a country's traders from the database.</li>
+    </ul>
+  </div>
+
+  <h2>Add it to Torn PDA</h2>
+  <div class="card">
+    <ol>
+      <li>Make sure your <b>API key</b> is set in Torn PDA (a Limited key is best).</li>
+      <li>Open <span class="path">Settings → Advanced browser settings</span> and turn on <b>Enable custom user scripts</b>.</li>
+      <li>Tap <span class="path">Manage scripts</span>, press <b>+</b> to add a script, and tap <span class="path">Configure</span>.</li>
+      <li>Paste this link into <b>Remote URL</b>:
+        <div class="url"><input id="u" readonly value="https://mentat.example.com/pda/mentat-mugger.user.js" aria-label="Script address"><button id="copy" type="button">Copy</button></div>
+        <div class="copied" id="copied" role="status"></div>
+      </li>
+      <li>Fetch the script, check its name is <b>Mentat Mugger</b>, and save it. Open any Torn page: it signs you in with Torn PDA's key.</li>
+    </ol>
+  </div>
+
+  <h2>Add it to a desktop browser (Tampermonkey, Violentmonkey, Greasemonkey)</h2>
+  <div class="card">
+    <ol>
+      <li>Install <a href="https://www.tampermonkey.net/">Tampermonkey</a> (or Violentmonkey; Greasemonkey on Firefox).</li>
+      <li>Chrome and Edge only: open <span class="path">chrome://extensions</span> (Edge: <span class="path">edge://extensions</span>), click <b>Details</b> under Tampermonkey and turn on <b>Allow User Scripts</b>.</li>
+      <li>Open Tampermonkey's <b>Dashboard</b>, go to <span class="path">Utilities</span>, and under <b>Install from URL</b> paste this address and click <b>Install</b>:
+        <div class="url"><input id="tm" readonly value="https://mentat.example.com/pda/mentat-mugger.user.js" aria-label="Script address for Tampermonkey"><button type="button" data-copy="tm" data-note="tm-copied" data-done="Copied. Paste it into Install from URL.">Copy</button></div>
+        <div class="copied" id="tm-copied" role="status"></div>
+        In Greasemonkey or Violentmonkey, opening <a href="https://mentat.example.com/pda/mentat-mugger.user.js">the script address</a> shows the install screen.</li>
+      <li>Click <b>Install</b>. It keeps itself up to date from this server.</li>
+      <li>Open a Torn page, tap the Mugger button (the money bag) and sign in with your Torn API key.</li>
+    </ol>
+  </div>
+
+  <h2>Add it on iPad or iPhone (Safari)</h2>
+  <div class="card">
+    <p class="muted">If you use Torn PDA, follow the Torn PDA steps above instead.</p>
+    <ol>
+      <li>Install <a href="https://apps.apple.com/app/userscripts/id1463298887">Userscripts</a> from the App Store (free).</li>
+      <li>Turn it on for Safari: in the Settings app, open Safari's <b>Extensions</b>, turn on <b>Userscripts</b> and allow it on www.torn.com.</li>
+      <li>In Safari, open the script address:
+        <div class="url"><input id="ios" readonly value="https://mentat.example.com/pda/mentat-mugger.user.js" aria-label="Script address for Userscripts"><button type="button" data-copy="ios" data-note="ios-copied" data-done="Copied. Open it in Safari.">Copy</button></div>
+        <div class="copied" id="ios-copied" role="status"></div>
+        Then open the <b>Userscripts</b> extension from Safari's address bar and tap <b>Install</b>.</li>
+      <li>Open Torn in Safari, tap the Mugger button and sign in with your Torn API key.</li>
+    </ol>
+  </div>
+
+  <h2>FFScouter (optional)</h2>
+  <div class="card">
+    <p>Sign up at <a href="https://ffscouter.com">ffscouter.com</a> with your Torn API key (free). Then in Mugger: <span class="path">⚙ → FFScouter</span>, paste the key (in Torn PDA you can leave it empty to use PDA's key), agree to FFScouter's <a href="https://ffscouter.com/privacy">data policy</a> and tap <b>Turn on FFScouter</b>. It's used once per player per trip; requests go only to ffscouter.com.</p>
+  </div>
+
+  <h2>Your key and your data</h2>
+  <div class="card">
+    <p>To check you're a member, your key is sent once to the Mentat server, which asks Torn who you are and forgets it. Everything else Mugger looks up on Torn uses <b>your own key, from your device</b>, and only while you're flying out or abroad (plus your own status once a minute, to know when you fly). Nothing you look up is sent to the Mentat server. In a browser the key is kept in the script's own storage on your device and only sent to api.torn.com; signing out removes it. Players in your country are checked again every minute (you can make it 2 or 3), players flying there every 3 minutes and the rest every 20. You choose how many calls a minute Mugger may use (20 to start with; Torn allows 100 a minute across all your tools).</p>
+    <table class="tos">
+      <tr><th>Data Storage</th><td>Only on your device (the script's own storage)</td></tr>
+      <tr><th>Data Sharing</th><td>None</td></tr>
+      <tr><th>Purpose of Use</th><td>Public community tools: finding mug targets abroad</td></tr>
+      <tr><th>Key Storage &amp; Sharing</th><td>Not stored or shared by the server. Torn PDA: PDA's key. Browser: the key you sign in with, kept only on your device and sent only to Torn.</td></tr>
+      <tr><th>Key Access Level</th><td>Limited recommended (your battle stats); Minimal for your status, travel and merits; other players' profile, job and personal stats are public</td></tr>
+    </table>
+    <p>The script only shows and links: it never reads, changes or clicks anything on Torn's pages.</p>
+  </div>
+
+  <footer>Mentat · free tools for the faction. Torn PDA is a separate app by Manuito; FFScouter and Weav3r are separate services.</footer>
+</main>
+<script src="guide.js"></script>
+</body>
+</html>

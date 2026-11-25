@@ -8,7 +8,7 @@
 // tab in a later version, say) goes back to its default place.
 
 // Default order (the user's choice, 2026-11-18).
-const NAV_PANELS = [['overview', 'Overview'], ['chain', 'Chain'], ['targets', 'Targets'], ['faction', 'My Faction'], ['war', 'War'], ['research', 'Oppo Research'], ['market', 'Market'], ['travel', 'Travel'], ['planner', 'Planner'], ['casino', 'Casino'], ['alerts', 'Alerts'], ['settings', 'Settings']];
+const NAV_PANELS = [['overview', 'Overview'], ['chain', 'Chain'], ['targets', 'Targets'], ['mugger', 'Mugger'], ['faction', 'My Faction'], ['war', 'War'], ['research', 'Oppo Research'], ['market', 'Market'], ['travel', 'Travel'], ['planner', 'Planner'], ['casino', 'Casino'], ['alerts', 'Alerts'], ['settings', 'Settings']];
 // Sub-tabs. `pref` remembers the one last open when they sit under their tab.
 const NAV_SUBS = {
   targets: { pref: 'targets.sub', views: [['list', 'Targets'], ['abroad', 'Abroad']] },
@@ -189,7 +189,7 @@ function navReset() { cmd('settings.set', 'ui.nav', { order: [], sub: {}, hidden
 
 // Condensed tabs (ui.condensed): no profile pictures, faction tags or banners in that tab, with
 // tighter rows. Only the tabs that show pictures offer it; a sub-tab condenses its whole tab.
-const PICTURE_TABS = ['overview', 'chain', 'targets', 'research', 'faction', 'war'];
+const PICTURE_TABS = ['overview', 'chain', 'targets', 'mugger', 'research', 'faction', 'war'];
 const condensedTabs = () => (S.settings && S.settings.ui && Array.isArray(S.settings.ui.condensed) ? S.settings.ui.condensed : []);
 function setCondensed(tab, on) {
   if (!PICTURE_TABS.includes(tab)) return;

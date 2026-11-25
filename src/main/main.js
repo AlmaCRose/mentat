@@ -559,6 +559,32 @@ function start() {
     if (skipped) notes.push(`${skipped} skipped (you or your faction)`);
     notify('Targets', `Added ${res.added} player${res.added === 1 ? '' : 's'} to ${which === 'abroad' ? 'the Abroad list' : 'Targets'}${notes.length ? `; ${notes.join(', ')}` : ''}.`, '');
   }
+  // "Add all players in this list to Mugger" (the user's request, 2026-11-25): the same list reader, onto
+  // Mugger's list for this trip (as a pasted People list: once you've landed only those are checked, and
+  // anyone who leaves drops off). You and your own faction are left out.
+  async function addListToMugger(wc, p) {
+    const z = wc.getZoomFactor() || 1;
+    let r = null;
+    try {
+      r = await wc.executeJavaScriptInIsolatedWorld(LIST_WORLD, [{ code: `(${readPlayerList.toString()})(${Math.round(p.x / z)}, ${Math.round(p.y / z)}, ${JSON.stringify(p.linkURL)})` }]);
+    } catch (e) { console.error('Read player list:', e.message); }
+    const players = r && Array.isArray(r.players) ? r.players : [];
+    const meId = ((core.api.status().account) || {}).id || 0;
+    const own = core.war.state.own ? core.war.state.own.id : 0;
+    const keep = players.filter(x => x.id !== meId && !(own && x.factionId === own));
+    if (!keep.length) {
+      notify('Mugger', players.length ? 'Nobody to add: everyone in that list is you or in your faction.' : "Couldn't find a list of players around that link.", '');
+      return;
+    }
+    const res = core.mugger.addPlayers(keep);
+    if (res.error) { notify('Mugger', res.error, ''); return; }
+    const already = keep.length - res.added;
+    const skipped = players.length - keep.length;
+    const notes = [];
+    if (already) notes.push(res.full ? `${already} not added: already listed or the list is full at 300` : `${already} already listed`);
+    if (skipped) notes.push(`${skipped} skipped (you or your faction)`);
+    notify('Mugger', `Added ${res.added} player${res.added === 1 ? '' : 's'} to Mugger's list for ${res.country} (${res.total} on it)${notes.length ? `; ${notes.join(', ')}` : ''}.${res.landed ? '' : ' Mugger switches to them when you land.'}`, '');
+  }
   // One player from a right-click: says so when they're already listed (nobody is listed twice).
   function addOnePlayer(id, which) {
     const label = which === 'abroad' ? 'the Abroad list' : 'Targets';
@@ -582,6 +608,7 @@ function start() {
           { label: `Add player ${id} to ${to}`, click: () => addOnePlayer(id, which) },
           { label: `Add all players in this list to ${to}`, click: () => addListPlayers(wc, p, which).catch(e => console.error('Add list players:', e)) },
         );
+        if (core.mugger.trip()) items.push({ label: 'Add all players in this list to Mugger', click: () => addListToMugger(wc, p).catch(e => console.error('Add list to Mugger:', e)) });
       }
       items.push({ type: 'separator' });
     }
