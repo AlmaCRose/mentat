@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mentat war board
 // @namespace    mentat.example.com
-// @version      1.0.19
+// @version      1.0.22
 // @description  The enemy faction with dibs, and a shared hit queue with the time each person hits the chain. For members of the faction's Mentat server. Works in Torn PDA and in browsers (Tampermonkey).
 // @author       Mentat
 // @match        https://www.torn.com/*
@@ -34,7 +34,7 @@
   if (window.top !== window.self || window.__mentatWar) return;
   window.__mentatWar = true;
 
-  const VERSION = '1.0.19';
+  const VERSION = '1.0.22';
   const SERVER = 'https://mentat.example.com';
   const GUIDE = `${SERVER}/pda/war.html`;
   const PDA_KEY = '###PDA-APIKEY###';
@@ -46,6 +46,13 @@
   const GM4 = typeof GM !== 'undefined' && GM ? GM : null;
   const handler = (typeof GM_info !== 'undefined' && GM_info && GM_info.scriptHandler) || (GM4 && GM4.info && GM4.info.scriptHandler) || '';
   const isPda = typeof PDA_httpGet === 'function';
+  // Inside Mentat's desktop app (its War board tab, the user's request 2026-11-26): the app sets
+  // window.__mentatWarEmbed before loading this script. Then the board sits in that tab (no button,
+  // no sign-in of its own): Mentat server calls go through the app's own sign-in, Torn calls through
+  // the app's API queue with the key saved in Mentat, FFScouter with the key in Mentat's Settings.
+  const EMBED = window.__mentatWarEmbed && typeof window.__mentatWarEmbed === 'object' ? window.__mentatWarEmbed : null;
+  // Not on show: the page is in the background, or (in Mentat) the War board tab isn't showing.
+  const away = () => (EMBED ? !EMBED.visible() : document.hidden);
 
   // ---- Storage: Torn PDA's script store, Tampermonkey's, or localStorage ----
   const store = {
@@ -93,6 +100,7 @@
     return r;
   }
   async function server(method, path, body, token) {
+    if (EMBED) return EMBED.server(method, path, method === 'POST' ? body || {} : null);
     const headers = { 'Content-Type': 'application/json', Accept: 'application/json' };
     if (token) headers.Authorization = `Bearer ${token}`;
     const r = await xhr(method, `${SERVER}/api/v1/${path}`, headers, method === 'POST' ? JSON.stringify(body || {}) : undefined);
@@ -102,8 +110,9 @@
   }
 
   // ---- Sign-in: the server checks the key's faction, then forgets the key ----
-  let session = await store.get('session', '');
-  let me = await store.get('me', null);
+  // In Mentat the app is signed in already ('app' stands for its sign-in).
+  let session = EMBED ? 'app' : await store.get('session', '');
+  let me = EMBED ? (EMBED.me && EMBED.me()) || null : await store.get('me', null);
   let signError = '';
   async function signIn(key) {
     signError = '';
@@ -144,14 +153,32 @@
   const FFS_KEY_ERRORS = { 2: 'invalid key format', 6: 'key not registered at ffscouter.com', 4010: 'your account is banned from FFScouter', 4011: 'your faction is banned from FFScouter' };
   const ffs = Object.assign({ on: false, pda: false, premium: false, error: '' }, await store.get('ffs', {}));
   let ffsKey = ffs.on ? (ffs.pda ? pdaKey : await store.get('ffsKey', '')) : '';
+  // In Mentat: FFScouter is on when Mentat has an FFScouter key (Settings → Integrations); the app
+  // adds the key to each request ('app' stands for it here).
+  function ffsFromApp() {
+    if (!EMBED) return;
+    const st = (EMBED.ffsState && EMBED.ffsState()) || {};
+    const on = !!st.on;
+    if (on !== ffs.on) { ffsStats = on ? ffsStats : {}; ffsLast = 0; if (on) ffs.error = ''; }
+    Object.assign(ffs, { on, pda: false, premium: !!st.premium });
+    ffsKey = on ? 'app' : '';
+  }
   let ffsStats = await store.get('ffsStats', {}); // id -> { ff, bs, bsHuman, at }
   let ffsBusy = false;
   let ffsPausedUntil = 0;
   let ffsLast = 0;
+  ffsFromApp();
   async function ffsCall(path, params) {
-    const r = await xhr('GET', `${FFS}/${path}?${new URLSearchParams(params)}`, { Accept: 'application/json' });
-    let d = null;
-    try { d = JSON.parse(r.text); } catch (e) { /* not JSON */ }
+    let r, d = null;
+    if (EMBED) {
+      const { key, ...rest } = params; // the app adds its own key
+      const x = await EMBED.ffs(path, rest);
+      r = { status: x.status };
+      d = x.json;
+    } else {
+      r = await xhr('GET', `${FFS}/${path}?${new URLSearchParams(params)}`, { Accept: 'application/json' });
+      try { d = JSON.parse(r.text); } catch (e) { /* not JSON */ }
+    }
     if (r.status !== 200 || (d && d.error)) throw Object.assign(new Error((d && d.error) || `FFScouter returned HTTP ${r.status}`), { code: d && d.code, retry: d && d.retry_after_seconds });
     return d;
   }
@@ -168,6 +195,7 @@
     return true;
   }
   async function ffsOff(reason = '') {
+    if (EMBED) { ffs.error = reason; ffsPausedUntil = Date.now() + 10 * 60 * SEC; return; } // Mentat's own FFScouter handles its key
     Object.assign(ffs, { on: false, pda: false, error: reason });
     ffsKey = '';
     ffsStats = {};
@@ -176,6 +204,7 @@
     await store.set('ffsStats', {});
   }
   async function ffsTick() {
+    ffsFromApp();
     const now = Date.now();
     if (!ffs.on || !ffsKey || ffsBusy || now < ffsPausedUntil || now - ffsLast < 20 * SEC || !board) return;
     const ids = new Set();
@@ -207,6 +236,7 @@
     }
   }
   const ffOf = id => (ffs.on && ffsStats[id]) || null;
+  const FFS_WHERE = EMBED ? "Mentat's Settings → Integrations" : 'Settings (⚙)'; // where FFScouter is turned on
 
   // Target search (Targets tab): FFScouter's target finder with your key, like Mentat's Targets tab
   // (src/main/features/ffscouter.js findTargets): its "best respect" / "level hunting" lists, or
@@ -255,6 +285,14 @@
   // Your own battle stats, for "Around your range": the real total from Torn when the board has
   // your key (Torn PDA; needs a Limited key), refreshed every 30 min; otherwise FFScouter's
   // estimate of you.
+  // A Torn API read with your own key. In Mentat it goes through the app's API queue (so it counts
+  // towards Mentat's per-minute limit) with the key saved in Mentat; the answer has the same shape,
+  // Torn's errors included ({ error: { code, error } }).
+  async function tornGet(path, key) {
+    if (EMBED) return EMBED.torn(path);
+    const r = await fetch(`https://api.torn.com${path}${path.includes('?') ? '&' : '?'}key=${key}&comment=Mentat`);
+    return r.json();
+  }
   let myStats = await store.get('myStats', null); // { total, at } or { denied, at }
   let myStatsBusy = false;
   async function myStatsTick() {
@@ -264,8 +302,7 @@
     if (age < (myStats && myStats.denied ? 6 * 3600 * SEC : 30 * 60 * SEC)) return;
     myStatsBusy = true;
     try {
-      const r = await fetch(`https://api.torn.com/v2/user/battlestats?key=${statsKey}&comment=Mentat`);
-      const d = await r.json();
+      const d = await tornGet('/v2/user/battlestats', statsKey);
       if (d && d.error) myStats = { denied: [2, 16].includes(d.error.code), at: Date.now() }; // 16: Public key, 2: wrong key; else try again later
       else if (d && d.battlestats && d.battlestats.total) myStats = { total: Number(d.battlestats.total), at: Date.now() };
       await store.set('myStats', myStats);
@@ -324,16 +361,15 @@
     if (tBusy || panel.hidden || view !== 'main' || cfg.tab !== 'targets' || !ffs.on || !liveKey) return;
     tBusy = true;
     try {
-      while (!panel.hidden && view === 'main' && cfg.tab === 'targets' && liveKey && Date.now() >= tPausedUntil && !document.hidden) {
+      while (!panel.hidden && view === 'main' && cfg.tab === 'targets' && liveKey && Date.now() >= tPausedUntil && !away()) {
         const now = Date.now();
         const next = finder.results.find(r => tNeedsCheck(r.id, now));
         if (!next) break;
-        const r = await fetch(`https://api.torn.com/v2/user/${next.id}/basic?striptags=true&key=${liveKey}&comment=Mentat`);
-        const d = await r.json();
+        const d = await tornGet(`/v2/user/${next.id}/basic?striptags=true`, liveKey);
         if (d && d.error) {
           const code = d.error.code;
           tError = `Torn says: ${d.error.error || 'error'}.`;
-          if (code === 2 && !pdaKey) { liveKey = ''; await store.set('liveKey', ''); tError = 'Torn rejected your API key: enter it again in Settings (⚙).'; }
+          if (code === 2 && !pdaKey && !EMBED) { liveKey = ''; await store.set('liveKey', ''); tError = 'Torn rejected your API key: enter it again in Settings (⚙).'; }
           if (code === 6) { tStatus[next.id] = { state: 'Unknown', desc: 'Not found on Torn', until: 0, at: Date.now() }; tError = ''; }
           else { tPausedUntil = Date.now() + (code === 5 ? 60 : 15) * SEC; break; } // 5: too many requests
         } else {
@@ -359,7 +395,7 @@
   // ---- Shadow root, styles ----
   const host = document.createElement('div');
   host.id = 'mentat-war';
-  host.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:2147483001;';
+  host.style.cssText = EMBED ? 'display:block;position:relative;' : 'position:fixed;inset:0;pointer-events:none;z-index:2147483001;';
   const root = host.attachShadow({ mode: 'open' });
   root.innerHTML = `<style>
     :host { all: initial; }
@@ -512,7 +548,60 @@
     .settings input[type=checkbox] { flex: none; width: 20px; height: 20px; accent-color: #b07a22; }
     a { color: #e9cf9f; }
   </style>`;
-  document.documentElement.appendChild(host);
+  if (EMBED) {
+    // In Mentat's tab: the board fills the tab and takes the app's colour theme (its CSS variables
+    // reach into this shadow root), so light themes and the contrast settings apply here too.
+    host.classList.add('embed');
+    const embedCss = document.createElement('style');
+    embedCss.textContent = `
+    :host(.embed) { color: var(--text); font: 14px/1.45 "Segoe UI", system-ui, sans-serif; }
+    :host(.embed) .panel { position: static; width: auto; max-height: none; overflow: visible; box-shadow: none; border-radius: 8px;
+      background: var(--bg-2); color: var(--text); border-color: var(--line); font: inherit; }
+    :host(.embed) .head { position: sticky; top: 0; z-index: 1; background: var(--bg-3); border-bottom-color: var(--line); border-radius: 8px 8px 0 0; }
+    :host(.embed) .row1 { cursor: default; }
+    :host(.embed) .grip, :host(.embed) [data-act="close"] { display: none; }
+    :host(.embed) .tabs { grid-template-columns: repeat(4, 1fr); }
+    @media (max-width: 620px) { :host(.embed) .tabs { grid-template-columns: 1fr 1fr; } } /* a narrow pop-out window */
+    :host(.embed) .body { overflow: visible; padding: 12px 14px 16px; }
+    :host(.embed) .title { color: var(--accent); }
+    :host(.embed) h3, :host(.embed) .pos, :host(.embed) .tos th { color: var(--accent); }
+    :host(.embed) a, :host(.embed) .who .tgt a { color: var(--blue); }
+    :host(.embed) .enemy .nm a { color: var(--text); }
+    :host(.embed) .iconbtn, :host(.embed) .tabs button, :host(.embed) .btn, :host(.embed) .filters button { background: var(--bg-3); border-color: var(--control-line); color: var(--text); }
+    :host(.embed) .iconbtn:hover, :host(.embed) .tabs button:hover, :host(.embed) .btn:hover, :host(.embed) .filters button:hover { background: var(--bg-4); }
+    :host(.embed) .tabs button[aria-selected="true"], :host(.embed) .btn.primary { background: var(--accent-2); border-color: var(--accent); color: var(--on-accent); }
+    :host(.embed) .filters button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+    :host(.embed) .btn.on { background: var(--pill-ok-bg); border-color: var(--green); color: var(--pill-ok); }
+    :host(.embed) .btn.danger { border-color: var(--red); }
+    :host(.embed) select, :host(.embed) input { background: var(--bg); border-color: var(--control-line); color: var(--text); }
+    :host(.embed) input[type=checkbox] { accent-color: var(--accent); }
+    :host(.embed) .note { background: var(--bg-3); border-color: var(--line); }
+    :host(.embed) .note.turn { border-color: var(--orange); }
+    :host(.embed) .note.go { border-color: var(--red); background: var(--pill-bad-bg); }
+    :host(.embed) .small, :host(.embed) .muted, :host(.embed) .chain .count, :host(.embed) .warline, :host(.embed) .eta .at, :host(.embed) .eta .drift, :host(.embed) .who .tgt { color: var(--muted); }
+    :host(.embed) .chain .score, :host(.embed) ul.recent li, :host(.embed) .enote { color: var(--text); }
+    :host(.embed) .ok { color: var(--pill-ok); } :host(.embed) .warn, :host(.embed) .bwarn, :host(.embed) .enemy .dibs { color: var(--pill-warn); }
+    :host(.embed) .bad, :host(.embed) .err { color: var(--pill-bad); } :host(.embed) .info { color: var(--pill-info); }
+    :host(.embed) .q li, :host(.embed) .enemy li, :host(.embed) .settings label, :host(.embed) .tos th, :host(.embed) .tos td { border-bottom-color: var(--row-line); }
+    :host(.embed) .q li.mine { background: var(--row-me); }
+    :host(.embed) .enemy li.claimed { border-left-color: var(--accent); }
+    :host(.embed) .dot { background: var(--muted); }
+    :host(.embed) .ffs, :host(.embed) .tag.pos { background: var(--bg-4); color: var(--text); }
+    :host(.embed) .ffs.ok, :host(.embed) .eng, :host(.embed) .tag.rev { background: var(--pill-ok-bg); color: var(--pill-ok); border-color: var(--green); }
+    :host(.embed) .ffs.warn { background: var(--pill-warn-bg); color: var(--pill-warn); }
+    :host(.embed) .ffs.bad { background: var(--pill-bad-bg); color: var(--pill-bad); }
+    :host(.embed) .bs { background: var(--pill-info-bg); color: var(--pill-info); }
+    :host(.embed) .eng.old { background: var(--bg-3); color: var(--muted); }
+    :host(.embed) .etotal { background: var(--pill-ok-bg); border-color: var(--green); }
+    :host(.embed) .etotal b { color: var(--pill-ok); }
+    :host(.embed) .toast, :host(.embed) .copybox, :host(.embed) .modal { background: var(--bg-2); border-color: var(--accent); color: var(--text); font-family: inherit; }
+    :host(.embed) .modal h2 { color: var(--accent); }
+    :host(.embed) .copybox textarea { background: var(--bg); border-color: var(--control-line); color: var(--text); }
+    :host(.embed) .actrow input, :host(.embed) .settings input[type=checkbox], :host(.embed) .modal label.agree input { accent-color: var(--accent); }
+    `;
+    root.appendChild(embedCss);
+    EMBED.mount.appendChild(host);
+  } else document.documentElement.appendChild(host);
 
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   function toast(text, ms = 5000) {
@@ -561,6 +650,7 @@
     let r;
     const ours = !panel.hidden && cfg.tab === 'faction' ? `&ours=${board && board.ours && board.ours.members ? board.ours.serverFetchedAt : 0}` : '';
     try { r = await server('GET', `war/board?${open ? `members=${have}${ours}` : 'lite=1'}`, null, session); } catch (e) { netError = "Can't reach the Mentat server."; render(); return; }
+    if (r.status === 401 && EMBED) { board = null; netError = (r.json && r.json.error) || 'Sign in to your Mentat server first.'; render(); return; } // the app's sign-in
     if (r.status === 401) { session = ''; await store.set('session', ''); netError = ''; if (pdaKey) await signIn(pdaKey); render(); return; }
     if (r.status !== 200 || !r.json) { netError = (r.json && r.json.error) || `Mentat server error ${r.status}`; render(); return; }
     take(r.json);
@@ -570,7 +660,10 @@
   function localQueue(q, skew) {
     const L = t => (t ? t + skew : t);
     if (q.chain) { q.chain.fetchedAt = L(q.chain.fetchedAt); q.chain.cooldownUntil = L(q.chain.cooldownUntil); }
-    for (const e of q.entries) if (e.targetInfo && e.targetInfo.until) e.targetInfo.until = L(e.targetInfo.until);
+    for (const e of q.entries) {
+      if (e.targetInfo && e.targetInfo.until) e.targetInfo.until = L(e.targetInfo.until);
+      if (e.bumped) e.bumped.out = L(e.bumped.out);
+    }
     for (const h of q.recent || []) h.at = L(h.at);
     return q;
   }
@@ -625,6 +718,39 @@
     lastOk = Date.now();
     netError = '';
     render();
+    showNotices(b.notices || []);
+  }
+
+  // Notices for you from the server (the user's rule, 2026-11-26): your queued target landed in
+  // hospital, so your entry came off the queue. Shown as a popup until you dismiss it, which
+  // dismisses it on your other devices too. Phones vibrate (Settings).
+  const noticeShown = new Set();
+  function showNotices(list) {
+    if (EMBED && !EMBED.visible()) return; // Mentat: when the War board tab is on show
+    for (const n of list) {
+      if (n.kind !== 'targetHospital' || noticeShown.has(n.id)) continue;
+      noticeShown.add(n.id);
+      const m = document.createElement('div');
+      m.className = 'modal notice';
+      m.setAttribute('role', 'alertdialog');
+      m.setAttribute('aria-label', 'Taken off the hit queue');
+      const who = n.targetName ? `${esc(n.targetName)} [${n.target}]` : `[${n.target}]`;
+      m.innerHTML = `<h2>Taken off the hit queue</h2>
+        <p style="margin:0 0 8px">Your target <a href="https://www.torn.com/profiles.php?XID=${n.target}">${who}</a> landed in hospital${n.details ? ` <span class="muted">(${esc(n.details)})</span>` : ''}, so your place in the queue was removed${n.addedBy ? ` <span class="muted">(${esc(n.addedBy)} had added you)</span>` : ''}.</p>
+        <p class="small" style="margin:0 0 10px">Join the queue again with a new target to get back in line. <span class="muted">${tct(n.at).slice(0, 5)} TCT</span></p>
+        <div class="join"><button class="btn primary" data-n="queue">Show the queue</button><button class="btn" data-n="ok">OK</button></div>`;
+      m.addEventListener('click', e => {
+        const l = e.target.closest('a[href]');
+        if (l && EMBED) { e.preventDefault(); EMBED.open(l.href); return; }
+        const b = e.target.closest('[data-n]');
+        if (!b) return;
+        m.remove();
+        server('POST', 'war/queue', { act: 'ack', notice: n.id }, session).catch(() => {});
+        if (b.dataset.n === 'queue') { cfg.tab = 'queue'; view = 'main'; saveCfg(); if (panel.hidden) togglePanel(true); else render(true); }
+      });
+      root.appendChild(m);
+      if (cfg.vibrate && navigator.vibrate) { try { navigator.vibrate([300, 150, 300]); } catch (e) { /* not allowed */ } }
+    }
   }
 
   async function act(path, body) {
@@ -650,7 +776,7 @@
   // 3/5/10 s with its own key (Torn PDA's key, or one entered for Live in a browser), so Live
   // never uses the server owner's key. The server's once-a-minute copy still supplies landing
   // estimates (it watches flights); the live read supplies everything else.
-  let liveKey = pdaKey || await store.get('liveKey', '');
+  let liveKey = EMBED ? 'app' : pdaKey || await store.get('liveKey', ''); // in Mentat: the app's key
   const liveData = { enemy: null, ours: null }; // { factionId, at, members } per tab
   const serverMembers = { enemy: new Map(), ours: new Map() }; // the server's latest copies (for landing estimates)
   let liveBusy = false;
@@ -711,12 +837,11 @@
     // Your own faction: /v2/faction/members (the key's faction); the enemy: /v2/faction/{id}/members.
     const path = kind === 'enemy' ? `/v2/faction/${fid}/members` : '/v2/faction/members';
     try {
-      const r = await fetch(`https://api.torn.com${path}?striptags=true&timestamp=${Math.floor(now / 1000)}&key=${liveKey}&comment=Mentat`);
-      const d = await r.json();
+      const d = await tornGet(`${path}?striptags=true&timestamp=${Math.floor(now / 1000)}`, liveKey);
       if (d && d.error) {
         const code = d.error.code;
         liveError = `Torn says: ${d.error.error || 'error'}.`;
-        if (code === 2 && !pdaKey) { liveKey = ''; await store.set('liveKey', ''); liveError = 'Torn rejected that key: enter it again to use Live.'; }
+        if (code === 2 && !pdaKey && !EMBED) { liveKey = ''; await store.set('liveKey', ''); liveError = 'Torn rejected that key: enter it again to use Live.'; }
         livePausedUntil = Date.now() + (code === 5 ? 60 : 15) * SEC; // 5: too many requests
       } else {
         if (kind === 'ours' && !board.ours) board.ours = { fetchedAt: 0, counts: null };
@@ -751,21 +876,21 @@
     ['Data Storage', 'Temporary, less than a day (deleted at once if you turn sharing off)'],
     ['Data Sharing', 'Faction (members signed in to your faction\'s Mentat server)'],
     ['Purpose of Use', 'Public community tools: faction chain and war planning'],
-    ['Key Storage & Sharing', 'Not stored or shared by the server. Torn PDA: PDA\'s key. Browser: the key you signed in with, kept only on this device and sent only to Torn.'],
+    ['Key Storage & Sharing', EMBED ? 'Not stored or shared by the server. Mentat app: the key saved in Mentat, kept encrypted on this PC and sent only to Torn.' : 'Not stored or shared by the server. Torn PDA: PDA\'s key. Browser: the key you signed in with, kept only on this device and sent only to Torn.'],
     ['Key Access Level', 'Minimal (selections: bars, cooldowns)'],
   ];
   const tosHtml = () => `<table class="tos" aria-label="Torn API terms for energy sharing">${TOS_ROWS.map(([k, v]) => `<tr><th>${k}</th><td>${esc(v)}</td></tr>`).join('')}</table>`;
   async function energyTick(force = false) {
     const now = Date.now();
-    if (!cfg.shareE || !session || eBusy || document.hidden || now < ePausedUntil) return;
+    // In Mentat: while the app runs (one window shares: the tools window), tab open or not.
+    if (!cfg.shareE || !session || eBusy || (EMBED ? !EMBED.energyHere() : document.hidden) || now < ePausedUntil) return;
     if (!force && now - eLast < E_EVERY) return;
     const key = energyKey();
     if (!key) { eStatus = { at: eStatus.at, error: 'Sharing needs your API key on this device (Settings).' }; return; }
     eBusy = true;
     eLast = now;
     try {
-      const r = await fetch(`https://api.torn.com/v2/user?selections=bars,cooldowns&key=${key}&comment=Mentat`);
-      const d = await r.json();
+      const d = await tornGet('/v2/user?selections=bars,cooldowns', key);
       if (d && d.error) {
         const code = d.error.code;
         eStatus = { at: eStatus.at, error: code === 16 ? "Your key is a Public key: sharing energy needs a Minimal key or higher." : code === 2 ? 'Torn rejected the key.' : `Torn says: ${d.error.error || 'error'}.` };
@@ -859,7 +984,7 @@
     m.innerHTML = `<h2 title="Drag to move"><span class="grip" aria-hidden="true">⠿</span>New: energy tracker</h2>
       ${ENERGY_NOTE}
       <p style="margin:0 0 6px">Share your <b>energy</b> and <b>drug cooldown</b> with your faction, so the Faction tab can show how much energy (and how many hits) online members have ready. It's off unless you turn it on.</p>
-      <p class="small" style="margin:0">While it's on, this device reads them from Torn with your own key about once a minute while you have Torn open, and sends them to your faction's Mentat server. Turn it off any time in Settings: your readings are deleted at once.</p>
+      <p class="small" style="margin:0">While it's on, this device reads them from Torn with your own key about once a minute while you have ${EMBED ? 'Mentat running' : 'Torn open'}, and sends them to your faction's Mentat server. Turn it off any time in Settings: your readings are deleted at once.</p>
       ${tosHtml()}
       ${me && me.keyLevel === 1 ? `<p class="err" style="margin:6px 0">Your API key is a <b>Public</b> key, which can't read energy. To share, sign out and sign in again with a Minimal or Limited key${pdaKey ? " (in Torn PDA: change the key in PDA's settings)" : ''}.</p>` : ''}
       ${energyKey() ? '' : `<div class="join"><input id="ekey" type="password" autocomplete="off" spellcheck="false" maxlength="40" placeholder="Your API key (Minimal or higher)" aria-label="Your API key for energy sharing"></div><p class="small" style="margin:4px 0 0">Kept only on this device, used only to read your energy and cooldowns from Torn.</p>`}
@@ -905,7 +1030,7 @@
   fab.setAttribute('role', 'button');
   fab.setAttribute('aria-label', 'Mentat war board');
   fab.innerHTML = `${MARK_SVG}<span class="t"></span>`;
-  root.appendChild(fab);
+  if (!EMBED) root.appendChild(fab); // in Mentat the tab (and its pop-out bubble) stands in for the button
   const clampX = x => Math.max(4, Math.min(window.innerWidth - 50, x));
   const clampY = y => Math.max(4, Math.min(window.innerHeight - 66, y));
   function placeFab() {
@@ -1036,6 +1161,7 @@
   // share of the screen (so it survives rotating and resizing) and always keeps the whole board
   // on screen; Settings → Reset places puts it back.
   function placePanel() {
+    if (EMBED) return; // fills Mentat's tab
     const p = cfg.panelPos;
     const st = panel.style;
     if (!p) { st.left = st.top = st.right = st.bottom = st.width = st.maxHeight = ''; return; }
@@ -1046,6 +1172,7 @@
   }
   window.addEventListener('resize', placePanel);
   (function dragPanel() {
+    if (EMBED) return;
     const handle = panel.querySelector('.row1');
     let start = null;
     handle.addEventListener('pointerdown', e => {
@@ -1079,10 +1206,9 @@
   placePanel();
 
   function togglePanel(open = panel.hidden) {
+    if (EMBED && open === !panel.hidden) return; // Mentat's tab shown or hidden again: nothing changed
     panel.hidden = !open;
-    cfg.open = open;
-    saveCfg();
-    view = 'main';
+    if (!EMBED) { cfg.open = open; saveCfg(); view = 'main'; } // in Mentat, keep Settings open across tab switches
     render(true);
     if (open) load();
   }
@@ -1098,7 +1224,7 @@
     return false;
   };
   const latestVersion = () => (board && board.script && board.script.version) || '';
-  const updateReady = () => newer(latestVersion(), VERSION);
+  const updateReady = () => !EMBED && newer(latestVersion(), VERSION); // Mentat's copy updates with the app
   const SCRIPT_URL = `${SERVER}/pda/mentat-war.user.js`;
   let updateHelp = false;
   function updateHtml() {
@@ -1117,6 +1243,7 @@
   let lastBodyKey = '';
   function render(force = false) {
     renderFab();
+    embedBadge();
     renderLight();
     if (panel.hidden) return;
     renderHead();
@@ -1155,7 +1282,8 @@
     $('chain').innerHTML = '';
     $('warline').textContent = '';
     if (!board) return;
-    tabs[0].textContent = `Queue${q && q.entries.length ? ` (${q.entries.length})` : ''}`;
+    const dibCount = Object.keys((board.claims && board.claims.claims) || {}).length;
+    tabs[0].textContent = willMode() ? `Dibs${dibCount ? ` (${dibCount})` : ''}` : `Queue${q && q.entries.length ? ` (${q.entries.length})` : ''}`;
     const e = board.enemy;
     tabs[1].textContent = e && e.counts ? `Enemy (${e.counts.okay} okay)` : 'Enemy';
     const oc = board.ours && board.ours.members ? countsOf(board.ours.members) : null;
@@ -1304,7 +1432,42 @@
       <div class="join"><input id="addtgt" inputmode="numeric" autocomplete="off" placeholder="Their target ID or profile link (optional)" aria-label="Their target (optional)"><button class="btn primary" data-act="addmember">Add to the queue</button></div>`;
   }
 
+  // Queue or Hit at will (the user's request, 2026-11-26): chain subleads and up switch it.
+  const willMode = () => !!(board && board.queue && board.queue.mode === 'will');
+  function modeHtml() {
+    const q = board.queue;
+    const by = q.modeBy ? ` <span class="small">(set by ${esc(q.modeBy)})</span>` : '';
+    if (!board.me.lead) return `<div class="sortrow"><span>Mode:</span> <b>${willMode() ? 'Hit at will' : 'Queue'}</b>${by}</div>`;
+    return `<div class="filters" role="group" aria-label="Mode"><span class="small" style="align-self:center">Mode:</span>
+      <button data-act="mode" data-mode="queue" aria-pressed="${!willMode()}">Queue</button><button data-act="mode" data-mode="will" aria-pressed="${willMode()}">Hit at will</button>${by}</div>`;
+  }
+  // Hit at will: the queue page shows who has dibs on whom.
+  function dibsHtml() {
+    const q = board.queue;
+    const now = Date.now();
+    const myId = board.me.id;
+    const claims = (board.claims && board.claims.claims) || {};
+    const members = new Map(((board.enemy && board.enemy.members) || []).map(m => [m.id, m]));
+    const rows = Object.entries(claims).map(([id, list]) => ({ id: Number(id), list, first: Math.min(...list.map(c => c.at)) }))
+      .sort((a, b) => a.first - b.first)
+      .map(({ id, list }) => {
+        const m = members.get(id);
+        const mine = list.some(c => c.by === myId);
+        const st = m ? statusOf(m, now) : null;
+        return `<li class="claimed"><div><div class="nm"><a href="https://www.torn.com/profiles.php?XID=${id}">${m ? esc(m.name) : `[${id}]`}</a>${m ? ` <span class="small">Lv ${m.level}</span>` : ''}${ffText(id)}</div>
+          ${st ? `<div class="st"><span class="${st.tone}">${st.html}</span></div>` : ''}
+          <div class="dibs">Dibs: ${list.map((c, i) => `${i + 1}. ${c.by === myId ? 'you' : esc(c.name)} <span class="muted">${ago(c.at)}</span>`).join(' · ')}</div></div>
+          <div class="side">${mine ? `<button class="btn on" data-act="dibs" data-target="${id}" data-on="0" aria-pressed="true">Dibs ✓</button>` : `<button class="btn" data-act="dibs" data-target="${id}" data-on="1">Dibs</button>`}
+            <a class="btn primary" href="https://www.torn.com/page.php?sid=attack&user2ID=${id}">Attack</a></div></li>`;
+      }).join('');
+    return `${modeHtml()}
+      <p class="small" style="margin:0 0 8px">Hit at will: no queue, hit when you're ready. Dib a target on the Enemy tab so others know who you're going for.</p>
+      ${rows ? `<ul class="enemy">${rows}</ul>` : '<p class="muted">Nobody has dibs right now.</p>'}
+      ${q.paused ? `<p class="small">${q.paused} queue ${q.paused === 1 ? 'entry is' : 'entries are'} kept for when the queue is switched back on.</p>` : ''}`;
+  }
+
   function queueHtml() {
+    if (willMode()) return dibsHtml();
     const q = board.queue;
     const est = chainInfo();
     const now = Date.now();
@@ -1324,20 +1487,20 @@
         if (board.me.lead) acts.push(`<button class="btn danger" data-act="remove" data-entry="${e.id}" data-name="${esc(e.name)}">Remove</button>`);
       }
       return `<li class="${mine ? 'mine' : ''}"><div class="pos">${i + 1}</div>
-        <div class="who"><b>${esc(e.name)}</b>${mine ? ' <span class="small">(you)</span>' : ''}${e.note ? ` <span class="small">${esc(e.note)}</span>` : ''}${e.addedBy ? ` <span class="small">· added by ${esc(e.addedBy)}</span>` : ''}${targetHtml(e, i)}</div>
+        <div class="who"><b>${esc(e.name)}</b>${mine ? ' <span class="small">(you)</span>' : ''}${e.note ? ` <span class="small">${esc(e.note)}</span>` : ''}${e.addedBy ? ` <span class="small">· added by ${esc(e.addedBy)}</span>` : ''}${e.bumped ? `<div class="small warn">Moved back: in hospital until ${tct(e.bumped.out).slice(0, 5)} TCT (out <span data-until="${e.bumped.out}"></span>)</div>` : ''}${targetHtml(e, i)}</div>
         <div class="eta" data-eta="${i}"></div>
         ${acts.length ? `<div class="acts">${acts.join('')}</div>` : ''}
         ${editingTarget === e.id ? `<div class="acts tgtform"><input id="tgtin" inputmode="numeric" autocomplete="off" placeholder="Target ID or profile link" aria-label="Target for ${esc(e.name)}" value="${e.target || ''}"><button class="btn primary" data-act="tgtsave" data-entry="${e.id}">Save</button>${e.target ? `<button class="btn" data-act="tgtclear" data-entry="${e.id}">No target</button>` : ''}<button class="btn" data-act="tgtcancel">Cancel</button></div>` : ''}</li>`;
     }).join('');
     const recent = (q.recent || []).slice(0, 6).map(h => `<li>${esc(h.name)} · ${esc(h.how)}${h.chain ? ` (#${num(h.chain)})` : ''}${h.timerAt ? ` at ${mmss(h.timerAt)}` : ''} · <span class="muted">${ago(h.at)}</span></li>`).join('');
     const watching = (q.watching || []).map(w => esc(w.name)).join(', ');
-    return `<div class="note" data-turn></div>
+    return `${modeHtml()}<div class="note" data-turn></div>
       <div class="pace"><label for="hitat">Hit speed: everyone hits at</label>${board.me.lead ? `<select id="hitat" data-act="hitAt">${options.join('')}</select>` : `<b>${mmss(q.hitAt)}</b>`}<span class="small">left on the timer${board.me.lead ? '' : ' (set by chain leads and subleads)'}</span></div>
       <div class="small">The timer refills to ${mmss(q.refill)} ${q.refillSeen ? '(seen on this chain)' : '(assumed until a hit is seen)'}, so one hit every ${mmss(est.step)}.${q.pace !== null ? ` Hits have really landed at about <b>${mmss(q.pace)}</b> (last ${q.paceCount}).` : ''}${q.hitAtBy ? ` Set by ${esc(q.hitAtBy)}.` : ''}</div>
       ${rows ? `<div class="join" style="margin-top:8px"><button class="btn" data-act="copyq" title="Copies the queue, with targets and times, as one line for Torn chat">Copy queue for chat</button></div><ol class="q">${rows}</ol>` : '<p class="muted">The queue is empty.</p>'}
       <div class="join"><input id="jt" inputmode="numeric" autocomplete="off" placeholder="Target ID or profile link (optional)" aria-label="Target ID or profile link (optional)"><button class="btn primary" data-act="join">Join the queue</button></div>
       ${addMemberHtml()}
-      <div class="small" style="margin-top:4px">Your hit comes off the queue by itself when the chain report shows it. Times move with the real timer, so a late or early hit shifts everyone after it.</div>
+      <div class="small" style="margin-top:4px">Your hit comes off the queue by itself when the chain report shows it. Times move with the real timer, so a late or early hit shifts everyone after it. Someone in hospital who won't be out by their turn moves back to where they will be (worked out with hits at 1:30 left). A queued target who lands in hospital takes that person off the queue, and they're told.</div>
       ${recent ? `<h3>Recent hits</h3><ul class="recent">${recent}</ul>` : ''}
       ${watching ? `<p class="small" style="margin-top:10px">On the board now: ${watching}</p>` : ''}`;
   }
@@ -1403,7 +1566,7 @@
     return `Live with your key is starting…${err}`;
   }
   function rangeNote() {
-    if (!ffs.on) return '<span class="warn">Around your range needs FFScouter: turn it on in Settings (⚙).</span>';
+    if (!ffs.on) return `<span class="warn">Around your range needs FFScouter: turn it on in ${FFS_WHERE}.</span>`;
     const mine = myTotal();
     if (!mine) return 'Waiting for your own stats (from FFScouter)…';
     return `FF 3.00 or more and estimated stats up to 1.75× yours (${compact(mine.total)}, ${mine.from}): up to ${compact(mine.total * RANGE_MAX)}.`;
@@ -1423,8 +1586,8 @@
   }
   function targetsHtml() {
     if (!ffs.on) {
-      return `<p class="muted">Search FFScouter's target lists by level, fair fight and activity, then queue or attack from here. It needs your FFScouter key: turn FFScouter on in Settings (⚙).</p>
-        <p class="small"><a href="${SERVER}/pda/war.html#ffscouter">How to add your FFScouter key</a></p>`;
+      return `<p class="muted">Search FFScouter's target lists by level, fair fight and activity, then queue or attack from here. It needs your FFScouter key: turn FFScouter on in ${FFS_WHERE}.</p>
+        <p class="small">${EMBED ? `<button class="btn" data-act="appffs">Open Mentat's Settings</button>` : `<a href="${SERVER}/pda/war.html#ffscouter">How to add your FFScouter key</a>`}</p>`;
     }
     const p = cfg.tf;
     const custom = !p.preset;
@@ -1452,7 +1615,7 @@
       : `<p class="small" style="margin:8px 0 0">${checked < finder.results.length ? `Checking where they are with your key: ${checked} of ${finder.results.length}. ` : ''}${hidden ? `${hidden} abroad or flying, not shown. ` : ''}${tError ? `<span class="err">${esc(tError)}</span>` : ''}</p>`;
     const rows = order.map(r => `<li><div><div class="nm"><a href="https://www.torn.com/profiles.php?XID=${r.id}">${esc(r.name || `#${r.id}`)}</a> <span class="small">Lv ${r.level || '?'}</span>${ffHtml(r)}</div>
         <div class="st">${statusHtml(r)} · <span class="small">${r.lastAction ? `Last action ${ago(r.lastAction)}` : 'Last action unknown'}</span>${enemyIds.has(r.id) ? ' · <span class="warn">in the enemy faction</span>' : ''}</div></div>
-        <div class="side"><button class="btn" data-act="queueT" data-target="${r.id}" ${queued.has(r.id) ? 'disabled' : ''} title="Join the hit queue with this target">+ Queue</button>
+        <div class="side">${willMode() ? '' : `<button class="btn" data-act="queueT" data-target="${r.id}" ${queued.has(r.id) ? 'disabled' : ''} title="Join the hit queue with this target">+ Queue</button>`}
           <a class="btn primary" href="https://www.torn.com/page.php?sid=attack&user2ID=${r.id}">Attack</a></div></li>`).join('');
     return `<div class="tf">
         <div class="sortrow"><label>List <select id="tfpreset"><option value="">Custom filters</option><option value="respect" ${p.preset === 'respect' ? 'selected' : ''}>Best respect</option><option value="level" ${p.preset === 'level' ? 'selected' : ''}>Level hunting</option></select></label></div>
@@ -1509,11 +1672,11 @@
       const cl = claims[m.id] || [];
       const mine = cl.some(c => c.by === myId);
       const st = statusOf(m, now);
-      const dibs = cl.length ? `<div class="dibs">Dibs: ${cl.map((c, i) => `${i + 1}. ${c.by === myId ? 'you' : esc(c.name)}`).join(' · ')}</div>` : '';
+      const dibs = cl.length ? `<div class="dibs">Dibs: ${cl.map((c, i) => `${i + 1}. ${c.by === myId ? 'you' : esc(c.name)}${c.queued ? ' (queued)' : ''}`).join(' · ')}</div>` : '';
       return `<li class="${cl.length ? 'claimed' : ''}"><div><div class="nm"><a href="https://www.torn.com/profiles.php?XID=${m.id}">${esc(m.name)}</a> <span class="small">Lv ${m.level}</span>${ffText(m.id)}</div>
         <div class="st"><span class="${st.tone}">${st.html}</span> · <span class="dot ${esc(m.last)}"></span><span class="small">${esc(m.last)}${m.last !== 'Online' && m.lastAt ? ` ${ago(m.lastAt)}` : ''}</span></div></div>
         <div class="side"><button class="btn ${mine ? 'on' : ''}" data-act="dibs" data-target="${m.id}" data-on="${mine ? 0 : 1}" aria-pressed="${mine}">${mine ? 'Dibs ✓' : 'Dibs'}</button>
-          <button class="btn" data-act="queueT" data-target="${m.id}" ${queued.has(m.id) ? 'disabled' : ''} title="Join the hit queue with this target">+ Queue</button>
+          ${willMode() ? '' : `<button class="btn" data-act="queueT" data-target="${m.id}" ${queued.has(m.id) ? 'disabled' : ''} title="Join the hit queue with this target">+ Queue</button>`}
           <a class="btn primary" href="https://www.torn.com/page.php?sid=attack&user2ID=${m.id}">Attack</a></div>${dibs}</li>`;
     }).join('');
     const age = e.fetchedAt ? Math.round((now - e.fetchedAt) / SEC) : null;
@@ -1524,8 +1687,8 @@
       ${activityHtml('')}
       ${cfg.filter === 'range' ? `<p class="small" style="margin:-2px 0 8px">${rangeNote()}</p>` : ''}
       ${rows ? `<ul class="enemy">${rows}</ul>` : '<p class="muted">Nobody matches.</p>'}
-      ${ffs.on ? `<p class="small">Fair fight and estimated stats from <a href="https://ffscouter.com">FFScouter</a>${ffs.error ? ` · <span class="err">${esc(ffs.error)}</span>` : ''}.</p>` : '<p class="small">Add FFScouter in Settings (⚙) for fair fight scores and estimated stats.</p>'}
-      <p class="small">One dib at a time: dibbing someone else moves yours. ${board.claims && board.claims.clearOn === 'hospital' ? "A dib ends when the player lands in hospital (the server's key can't read the faction attack log, so it can't see who hit), when you drop it, or after 15 minutes." : 'A dib ends when you hit that player, when they land in hospital, when you drop it, or after 15 minutes.'} Dibs are shared with Mentat's War tab claims.</p>`;
+      ${ffs.on ? `<p class="small">Fair fight and estimated stats from <a href="https://ffscouter.com">FFScouter</a>${ffs.error ? ` · <span class="err">${esc(ffs.error)}</span>` : ''}.</p>` : `<p class="small">Add FFScouter in ${FFS_WHERE} for fair fight scores and estimated stats.</p>`}
+      <p class="small">One dib at a time: dibbing someone else moves yours. Queuing with a target here dibs them for you, for as long as you wait in the queue. ${board.claims && board.claims.clearOn === 'hospital' ? "A dib ends when the player lands in hospital (the server's key can't read the faction attack log, so it can't see who hit), when you drop it, or after 15 minutes." : 'A dib ends when you hit that player, when they land in hospital, when you drop it, or after 15 minutes.'} Dibs are shared with Mentat's War tab claims.</p>`;
   }
 
   // ---- Our faction (the user's request, 2026-11-22) ----
@@ -1598,7 +1761,7 @@
       <div class="sortrow">${filters}${sorts}</div>
       ${activityHtml('o')}
       ${rows ? `<ul class="enemy">${rows}</ul>` : '<p class="muted">Nobody matches.</p>'}
-      ${ffs.on ? '<p class="small">Estimated stats from <a href="https://ffscouter.com">FFScouter</a>.</p>' : '<p class="small">Add FFScouter in Settings (⚙) for estimated stats.</p>'}`;
+      ${ffs.on ? '<p class="small">Estimated stats from <a href="https://ffscouter.com">FFScouter</a>.</p>' : `<p class="small">Add FFScouter in ${FFS_WHERE} for estimated stats.</p>`}`;
   }
 
   function signInHtml() {
@@ -1644,6 +1807,7 @@
 
   function ffsHtml() {
     const intro = `<h3>FFScouter</h3><p class="small" style="margin:0 0 6px">Fair fight scores and estimated battle stats on the enemy list and queued targets, from <a href="https://ffscouter.com">FFScouter</a>. Uses your own FFScouter key (your Torn API key after signing up at ffscouter.com), since fair fight is worked out against your stats. Requests go only to ffscouter.com and don't use your Torn API limit.</p>`;
+    if (EMBED) return `${intro}<p>${ffs.on ? `On (${ffs.premium ? 'premium' : 'free'} account), with the FFScouter key saved in Mentat.` : `Off: add your FFScouter key in ${FFS_WHERE}.`} <button class="btn" data-act="appffs">Open Mentat's Settings</button></p>${ffs.error ? `<p class="err">${esc(ffs.error)}</p>` : ''}`;
     if (ffs.on) return `${intro}<p>On (${ffs.premium ? 'premium' : 'free'} account${ffs.pda ? ", Torn PDA's key" : ''}). <button class="btn" data-act="ffsoff">Turn off</button></p>${ffs.error ? `<p class="err">${esc(ffs.error)}</p>` : ''}`;
     return `${intro}
       <div class="join"><input id="ffskey" type="password" autocomplete="off" spellcheck="false" maxlength="40" placeholder="${pdaKey ? "Leave empty to use Torn PDA's key" : 'FFScouter key'}" aria-label="FFScouter key"></div>
@@ -1655,16 +1819,16 @@
 
   function settingsHtml() {
     return `<div class="settings">
-      <p class="muted" style="margin-top:0">${me && me.name ? `Signed in as ${esc(me.name)}` : ''}${me && me.faction && me.faction.name ? ` · ${esc(me.faction.name)}` : ''}</p>
-      <label><input type="checkbox" data-set="vibrate" ${cfg.vibrate ? 'checked' : ''}> Vibrate when it's my turn (phones)</label>
-      <label><input type="checkbox" data-set="attackLight" ${cfg.attackLight ? 'checked' : ''}> On attack pages, show a red light when it isn't my turn (green when it is)</label>
+      <p class="muted" style="margin-top:0">${me && me.name ? `Signed in as ${esc(me.name)}` : ''}${me && me.faction && me.faction.name ? ` · ${esc(me.faction.name)}` : ''}${EMBED ? `${me && me.name ? ' · ' : ''}Uses Mentat's sign-in to your faction's server and the API key saved in Mentat.` : ''}</p>
+      ${EMBED ? '' : `<label><input type="checkbox" data-set="vibrate" ${cfg.vibrate ? 'checked' : ''}> Vibrate when it's my turn (phones)</label>
+      <label><input type="checkbox" data-set="attackLight" ${cfg.attackLight ? 'checked' : ''}> On attack pages, show a red light when it isn't my turn (green when it is)</label>`}
       ${energySettingsHtml()}
-      ${!pdaKey && liveKey ? "<p class=\"small\">This device keeps the API key you signed in with, for Live, energy sharing and your stats. It's only sent to api.torn.com. Signing out removes it.</p>" : ''}
+      ${!EMBED && !pdaKey && liveKey ? "<p class=\"small\">This device keeps the API key you signed in with, for Live, energy sharing and your stats. It's only sent to api.torn.com. Signing out removes it.</p>" : ''}
       ${leadsHtml()}
       ${ffsHtml()}
-      <div class="join" style="margin-top:12px"><button class="btn" data-act="resetpos">Reset places</button><a class="btn" href="${GUIDE}">Guide</a><button class="btn danger" data-act="signout">Sign out</button></div>
-      <div class="join"><button class="btn primary" data-act="back">Back to the board</button></div>
-      <p class="small">Mentat war board ${VERSION}${latestVersion() ? (updateReady() ? ` · <b>${esc(latestVersion())} is available</b>` : ' · up to date') : ''}. <button class="btn" data-act="checkupdate">Check for updates</button> It only shows and links: it never reads or clicks anything on Torn's pages.</p></div>`;
+      ${EMBED ? '' : `<div class="join" style="margin-top:12px"><button class="btn" data-act="resetpos">Reset places</button><a class="btn" href="${GUIDE}">Guide</a><button class="btn danger" data-act="signout">Sign out</button></div>`}
+      <div class="join"${EMBED ? ' style="margin-top:12px"' : ''}><button class="btn primary" data-act="back">Back to the board</button></div>
+      ${EMBED ? `<p class="small">War board ${VERSION}, built into Mentat (it updates with the app).</p></div>` : `<p class="small">Mentat war board ${VERSION}${latestVersion() ? (updateReady() ? ` · <b>${esc(latestVersion())} is available</b>` : ' · up to date') : ''}. <button class="btn" data-act="checkupdate">Check for updates</button> It only shows and links: it never reads or clicks anything on Torn's pages.</p></div>`}`;
   }
 
   // The button shows your next hit, else the chain timer.
@@ -1692,6 +1856,16 @@
     if (updateReady()) { fab.classList.add('upd'); fab.title = `${fab.title || 'War board'} · update ${latestVersion()} available`; }
     fab.setAttribute('aria-label', fab.title || 'War board');
   }
+  // In Mentat the button's text goes to the tab's pop-out bubble instead.
+  let lastBadge = '';
+  function embedBadge() {
+    if (!EMBED || !EMBED.badge) return;
+    const text = fab.querySelector('.t').textContent;
+    const tone = (/\b(ok|warn|bad)\b/.exec(fab.className) || [])[1] || '';
+    const b = text ? { text, tone, title: fab.title || 'War board' } : null;
+    const k = JSON.stringify(b);
+    if (k !== lastBadge) { lastBadge = k; EMBED.badge(b); }
+  }
 
   // ---- Taps ----
   const parseTarget = v => {
@@ -1702,6 +1876,10 @@
   };
   panel.addEventListener('click', async e => {
     if (e.target.closest('a[href="#"]')) e.preventDefault();
+    // In Mentat: Torn links open in Mentat's Torn browser, others in the web browser.
+    const link = EMBED && e.target.closest('a[href]');
+    if (link && /^https?:/i.test(link.getAttribute('href'))) { e.preventDefault(); EMBED.open(link.href); return; }
+    if (EMBED && e.target.closest('[data-act="appffs"]')) { EMBED.openSettings(); return; }
     if (e.target.matches && e.target.matches('[data-selectall]')) { e.target.select(); return; }
     const tab = e.target.closest('[data-tab]');
     if (tab) { cfg.tab = tab.dataset.tab; view = 'main'; saveCfg(); render(true); if (cfg.tab !== 'queue') load(); if (cfg.tab === 'targets') statusTick(); return; }
@@ -1770,6 +1948,7 @@
     setTimeout(() => { a.disabled = false; }, 1500);
     if (what === 'dibs') return act('war/claims', { target: Number(a.dataset.target), claim: a.dataset.on === '1' });
     if (what === 'queueT') return act('war/queue', { act: 'join', target: Number(a.dataset.target) });
+    if (what === 'mode') return act('war/queue', { act: 'mode', mode: a.dataset.mode });
     if (what === 'join') {
       const input = panel.querySelector('#jt');
       const t = parseTarget(input && input.value);
@@ -1851,7 +2030,7 @@
     if (e.key === 'Enter' && e.target.id === 'livekey') panel.querySelector('[data-act="livekey"]').click();
     if (e.key === 'Escape' && e.target.id === 'tgtin') { e.stopPropagation(); editingTarget = 0; render(true); return; }
     if (e.key === 'Enter' && e.target.id === 'key') panel.querySelector('[data-act="signin"]').click();
-    if (e.key === 'Escape') togglePanel(false);
+    if (e.key === 'Escape' && !EMBED) togglePanel(false);
   });
 
   // ---- Start ----
@@ -1862,7 +2041,8 @@
     if (timer) return;
     // Every 3 s with the board open, every 15 s closed (for the button), paused in the background.
     timer = setInterval(() => {
-      if (document.hidden || !session) return;
+      if (!session) return;
+      if (away()) { if (EMBED) energyTick(); return; } // in Mentat energy sharing goes on with the tab closed
       const every = panel.hidden && !(cfg.attackLight && onAttackPage()) ? 15 * SEC : 3 * SEC;
       if (Date.now() - lastLoad >= every - 200) { lastLoad = Date.now(); load(); }
       ffsTick();
@@ -1872,8 +2052,20 @@
       energyTick();
       energyPopup();
     }, 1000);
-    ticker = setInterval(() => { renderFab(); renderLight(); tickTimes(); }, 1000);
-    document.addEventListener('visibilitychange', () => { if (!document.hidden && session) { lastLoad = Date.now(); load(); } });
+    ticker = setInterval(() => { renderFab(); embedBadge(); renderLight(); tickTimes(); }, 1000);
+    document.addEventListener('visibilitychange', () => { if (!away() && session) { lastLoad = Date.now(); load(); } });
+  }
+
+  // Mentat's tab: shown and hidden by the app (the board is read only while it's on show).
+  if (EMBED) {
+    EMBED.control = {
+      show: () => { me = (EMBED.me && EMBED.me()) || me; ffsFromApp(); togglePanel(true); },
+      hide: () => togglePanel(false),
+      refresh: () => { lastLoad = Date.now(); load(); },
+    };
+    start();
+    if (EMBED.visible()) { togglePanel(true); lastLoad = Date.now(); } else render();
+    return;
   }
 
   // Someone the server turned away isn't asked again for 12 hours (the button stays hidden).

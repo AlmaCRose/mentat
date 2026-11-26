@@ -21,7 +21,8 @@
     "productName": "Mentat",
     "files": [
       "src/**/*",
-      "package.json"
+      "package.json",
+      "web/pda/mentat-war.user.js"
     ],
     "directories": {
       "output": "dist"

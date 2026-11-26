@@ -507,9 +507,21 @@ async function run(file) {
     return (m && m.name) || members.me(pid).name || '';
   };
   const queue = new HitQueue({ dataDir: cfg.dataDir, api, log, nameOf });
+  queue.onStatus = list => claims.observe(list); // queued targets' statuses clear dibs too
   // Members' shared energy (opt-in on the war board; see energy.js).
   const energy = new EnergyShare({ dataDir: cfg.dataDir });
   war.viewing = panel => panel === 'war' && queue.watching().length > 0;
+  // A queued target landing in hospital takes that entry off the queue (hitqueue.js observeTarget).
+  war.on('members', (fid, list) => { try { queue.observeMembers(list); } catch (e) { log('Hit queue error:', e.stack || e.message); } });
+  // Queuing applies dibs (the user's rule, 2026-11-26; claims.js followQueue): for targets in the
+  // enemy faction the war board shows (the same rule as its Enemy tab).
+  const isQueueEnemy = id => {
+    const t = war.enemyTarget();
+    const e = war.state.enemy;
+    if (!t || !e || e.id !== t.id || !e.members || (t.source === 'ranked' && war.phase() === 'ended')) return false;
+    return e.members.some(m => m.id === Number(id));
+  };
+  const queueDibs = (now = Date.now()) => (queue.willMode() ? claims.releaseQueue(now) : claims.followQueue(queue.entries, isQueueEnemy, now));
 
   // Shared war reports (the user's request, 2026-11-24): each built once with the server's key and
   // served as a ready-made page at a link the team opens without signing in or waiting on Torn's
@@ -857,6 +869,7 @@ async function run(file) {
     const now = Date.now();
     for (const f of loops) { try { f.tick(now); } catch (e) { log('Collector error:', e.stack || e.message); } }
     try { queue.tick(now); } catch (e) { log('Hit queue error:', e.stack || e.message); }
+    try { queueDibs(now); } catch (e) { log('Queue dibs error:', e.stack || e.message); }
     try { claims.tick(now); } catch (e) { log('Dibs error:', e.stack || e.message); }
     try { avatars.tick(now); } catch (e) { log('Pictures error:', e.message); }
     if (C.war) { try { autoReport(now); } catch (e) { log('War report error:', e.stack || e.message); } }
@@ -1124,6 +1137,7 @@ async function run(file) {
         enemy,
         claims: lite ? null : claims.list(),
         queue: queue.view(),
+        notices: queue.noticesFor(who.pid), // for this person only: e.g. taken off the queue
       });
     }
     // Shared war report links (anyone signed in): ?war=<id> gives that war's link and starts
@@ -1232,8 +1246,13 @@ async function run(file) {
         else if (act === 'done') queue.remove(who.pid, body.entry, { how: 'done' });
         else if (act === 'skip') queue.skip(who.pid, name, body.entry);
         else if (act === 'later') queue.later(who.pid, body.entry);
+        else if (act === 'ack') queue.ack(who.pid, body.notice); // a notice dismissed (on any of their devices)
         else if (act === 'target') queue.setTarget(who.pid, body.entry, body.target, { lead: isLead(who) });
-        else if (act === 'hitAt') {
+        else if (act === 'mode') {
+          // Queue or Hit at will (the user's request, 2026-11-26): chain subleads and up.
+          if (!isLead(who)) return send(req, res, 403, { error: 'Only chain leads and subleads can switch between Queue and Hit at will.' });
+          queue.setMode(who.pid, name, String(body.mode || ''));
+        } else if (act === 'hitAt') {
           if (!isLead(who)) return send(req, res, 403, { error: 'Only chain leads can set the hit speed.' });
           queue.setHitAt(who.pid, name, body.sec);
         } else if (act === 'leads') {
@@ -1249,6 +1268,7 @@ async function run(file) {
           queue.removeSublead(body.player);
         }
         else return send(req, res, 400, { error: 'Unknown action' });
+        try { queueDibs(); } catch (e) { log('Queue dibs error:', e.stack || e.message); }
         queue.seen(who.pid, name);
         return send(req, res, 200, { now: Date.now(), queue: queue.view() });
       } catch (e) {

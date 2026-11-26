@@ -108,7 +108,7 @@ function claimCell(m) {
   const list = claimsFor(m.id);
   const mine = list.some(x => x.by === c.me);
   // One line, in claim order; it wraps only when there are many.
-  const who = list.map((x, i) => `<span class="nowrap">${i + 1}. ${x.by === c.me ? '<b>you</b>' : esc(x.name)} <span class="muted">${fmtAgo(x.at)}</span></span>`).join(' · ');
+  const who = list.map((x, i) => `<span class="nowrap">${i + 1}. ${x.by === c.me ? '<b>you</b>' : esc(x.name)} <span class="muted">${x.queued ? 'in the hit queue' : fmtAgo(x.at)}</span></span>`).join(' · ');
   return ` <button class="${mine ? 'claimed' : ''}" data-war-claim="${m.id}" data-on="${mine ? 0 : 1}" title="${mine ? 'Drop your claim' : 'Claim: everyone using Mentat sees you are going for them. It clears when they land in hospital, or after 15 minutes.'}">${mine ? 'Unclaim' : 'Claim'}</button>${list.length ? `<div class="small claim-list" title="Claimed, in order">${who}</div>` : ''}`;
 }
 

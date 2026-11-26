@@ -337,6 +337,29 @@ function createCore(host) {
     'ffscouter.removeKey': () => ffscouter.removeKey(''),
     'ffscouter.refresh': () => ffscouter.refreshSoon(true),
     'ffscouter.find': params => ffscouter.findTargets(params && typeof params === 'object' ? params : {}),
+    // War board tab (the war board plugin running inside Mentat, the user's request 2026-11-26):
+    // its Mentat server calls with this app's sign-in, its Torn reads through the API queue with the
+    // saved key (counted like everything else), its FFScouter reads with the saved FFScouter key.
+    // Each limited to what the board uses.
+    'warboard.server': (method, p, body) => {
+      method = method === 'POST' ? 'POST' : 'GET';
+      p = String(p || '');
+      if (!/^war\/(board|queue|claims|energy)(\?[A-Za-z0-9_=&.-]*)?$/.test(p)) return { status: 400, json: { error: 'Not allowed' } };
+      return sync.call(method, p, method === 'POST' ? (body && typeof body === 'object' ? body : {}) : null);
+    },
+    'warboard.torn': async p => {
+      p = String(p || '');
+      const ok = /^\/v2\/(faction\/(\d+\/)?members|user\/battlestats|user\/\d+\/basic)(\?[A-Za-z0-9_=&]*)?$/.test(p) || p === '/v2/user?selections=bars,cooldowns';
+      if (!ok) return { error: { code: 0, error: 'Not allowed' } };
+      try {
+        // Priority 7: after the app's own features (chain, your status, war), so the board's Live
+        // can't crowd them out when the key is near its limit.
+        return await api.request(p, { soft: [6, 7, 16], priority: 7 });
+      } catch (e) {
+        return { error: { code: e.code || 0, error: e.message } };
+      }
+    },
+    'warboard.ffs': (p, params) => ffscouter.boardCall(String(p || ''), params),
     'ffscouter.intel': (fid, ids, force) => ffscouter.loadIntel(Number(fid) || 0, Array.isArray(ids) ? ids.slice(0, 120) : [], !!force),
     'war.refresh': () => war.refresh(),
     'war.watch': id => war.watch(id),

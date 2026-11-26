@@ -22,10 +22,15 @@ const { Store } = require('../src/main/store');
 const SEC = 1000;
 const DEFAULT_HIT_AT = 120;
 const DEFAULT_REFILL = 300;
+// Moving people in hospital back in the queue (the user's rule, 2026-11-26): always worked out as if
+// everyone hits at 1:30 left on the timer, whatever hit speed is set.
+const BUMP_HIT_AT = 90;
+const MEMBERS_EVERY = 60 * 1000; // the queued people's own status, while a chain runs
 const MAX_ENTRIES = 60;
 const MAX_PER_PLAYER = 3;
 const ENTRY_MS = 3 * 3600 * SEC; // an entry nobody acted on for 3 hours is dropped
 const RECENT = 12;
+const NOTICE_MS = 2 * 3600 * SEC; // a war board notice nobody dismissed goes after 2 hours
 const fail = (status, message) => Object.assign(new Error(message), { status });
 const fresh = now => `timestamp=${Math.floor(now / 1000)}`;
 
@@ -68,7 +73,8 @@ class HitQueue {
     this.report = null; // { id, hits: { pid: successful hits } } from the last chain report
     this.targets = new Map(); // player id -> { name, level, state, description, until, fetchedAt }
     this.viewers = new Map(); // pid -> { name, at }
-    this.last = { chain: 0, report: 0, target: 0 };
+    this.last = { chain: 0, report: 0, target: 0, members: 0 };
+    this.hitters = new Map(); // our members: id -> { state, until (ms) }, read while a chain runs
     this.busy = false;
     this.rev = 0;
     this.noFaction = false;
@@ -88,6 +94,7 @@ class HitQueue {
   // addedBy: the chain lead's name when a lead put someone else in the queue.
   join(pid, name, { target = 0, note = '', addedBy = '' } = {}, now = Date.now()) {
     this.prune(now);
+    if (this.willMode()) throw fail(409, `It's Hit at will${this.db.data.modeBy ? ` (set by ${this.db.data.modeBy})` : ''}: the queue is off. A chain lead or sublead can switch the queue back on.`);
     const t = Number(target) || 0;
     if (t && (!Number.isInteger(t) || t <= 0 || t > 1e8)) throw fail(400, 'That player ID doesn\'t look right.');
     if (this.entries.length >= MAX_ENTRIES) throw fail(429, 'The queue is full.');
@@ -188,6 +195,20 @@ class HitQueue {
     return !!p && this.db.data.leadPositions.some(x => x.toLowerCase() === p);
   }
 
+  // Hit at will or Queue (the user's request, 2026-11-26; chain subleads and up switch it). Hit at
+  // will turns the queue off: nobody joins, the board's queue page shows the dibs instead, and the
+  // queue's automatic parts (taking hits off, hospital checks, moving people back, queue dibs)
+  // pause. Entries already in the queue are kept for when it's switched back on.
+  willMode() { return this.db.data.mode === 'will'; }
+  setMode(pid, name, mode) {
+    if (!['queue', 'will'].includes(mode)) throw fail(400, 'Queue or Hit at will?');
+    this.db.data.mode = mode;
+    this.db.data.modeBy = String(name || `#${pid}`).slice(0, 40);
+    this.db.set('mode', mode);
+    this.db.set('modeBy', this.db.data.modeBy);
+    this.rev++;
+  }
+
   setHitAt(pid, name, sec) {
     const s = Math.round(Number(sec));
     if (!Number.isFinite(s) || s < 30 || s > 270) throw fail(400, 'Pick a time between 0:30 and 4:30.');
@@ -195,6 +216,68 @@ class HitQueue {
     this.db.data.hitAtBy = String(name || `#${pid}`).slice(0, 40);
     this.db.set('hitAt', s);
     this.rev++;
+  }
+
+  // A queued target who lands in hospital (the user's rule, 2026-11-26): that whole entry comes off
+  // the queue and its owner gets a notice on the war board, kept until they dismiss it. Only a
+  // change seen while queued counts: a target already in hospital when queued (someone lining up
+  // for when they come out) stays until they've been seen out of hospital (e.out). A stay from the
+  // queued person's own attack ("Hospitalized by <them>", "Mugged by <them>") is their hit, which
+  // the chain report takes off the queue as usual. st: { state, details, name } from the server's
+  // own reads (the target's status here, or the enemy faction's members in war.js).
+  observeTarget(id, st, now = Date.now()) {
+    id = Number(id);
+    if (this.willMode() || !st || !st.state || !this.entries.some(e => e.target === id)) return false;
+    let changed = false;
+    for (const e of [...this.entries]) {
+      if (e.target !== id) continue;
+      if (st.state !== 'Hospital') { if (!e.out) { e.out = true; changed = true; } continue; }
+      // Still in hospital but with a release time that moved later: hospitalised again (a new stay).
+      const until = Number(st.until) || 0;
+      if (!e.out && until && e.hospUntil && until > e.hospUntil + 30 * SEC) e.out = true;
+      if (until && e.hospUntil !== until) { e.hospUntil = until; changed = true; }
+      if (!e.out) continue;
+      const raw = String(st.details || '');
+      const details = raw.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+      const xid = /XID=(\d+)/i.exec(raw);
+      const by = /\bby\s+(.+)$/i.exec(details);
+      if ((xid && Number(xid[1]) === e.by) || (by && by[1].trim().toLowerCase() === String(e.name).toLowerCase())) continue; // their own hit
+      this.entries.splice(this.entries.indexOf(e), 1);
+      const targetName = st.name || (this.targets.get(id) || {}).name || '';
+      this.notice(e.by, { kind: 'targetHospital', target: id, targetName, details: details.slice(0, 80), entry: e.id, addedBy: e.addedBy || '' }, now);
+      this.log(`Hit queue: ${e.name} taken off, their target ${targetName || id} landed in hospital${details ? ` (${details})` : ''}.`);
+      changed = true;
+    }
+    if (changed) this.save();
+    return changed;
+  }
+  // The enemy faction's members as the server reads them (war 'members' events).
+  observeMembers(list, now = Date.now()) {
+    if (!this.entries.some(e => e.target)) return;
+    const want = new Set(this.entries.map(e => e.target).filter(Boolean));
+    for (const m of list || []) if (want.has(m.id)) this.observeTarget(m.id, { state: m.state, details: m.details, name: m.name, until: m.until }, now);
+  }
+
+  // Notices for one person, shown on their war board until they dismiss them (2 hours at most).
+  notice(pid, n, now = Date.now()) {
+    const list = (this.db.data.notices || []).filter(x => now - x.at < NOTICE_MS);
+    list.push({ id: ++this.db.data.seq, for: pid, at: now, ...n });
+    list.splice(0, Math.max(0, list.length - 200));
+    this.db.data.notices = list;
+    this.db.set('notices', list);
+    this.db.set('seq', this.db.data.seq);
+    this.rev++;
+  }
+  noticesFor(pid, now = Date.now()) {
+    return (this.db.data.notices || []).filter(n => n.for === pid && now - n.at < NOTICE_MS);
+  }
+  ack(pid, id) {
+    const list = this.db.data.notices || [];
+    const rest = list.filter(n => !(n.for === pid && n.id === Number(id)));
+    if (rest.length === list.length) return false;
+    this.db.data.notices = rest;
+    this.db.set('notices', rest);
+    return true;
   }
 
   noteHit(by, name, target, chainNo, how, now, timerAt = null) {
@@ -231,6 +314,7 @@ class HitQueue {
     if (this.busy || !this.api.hasKey()) return;
     this.prune(now);
     if (!this.active(now)) return;
+    if (this.bumpHospital(now)) this.save();
     const job = this.nextJob(now);
     if (!job) return;
     this.busy = true;
@@ -245,8 +329,10 @@ class HitQueue {
     if (now - this.last.chain >= (close ? 3 : 5) * SEC) return this.readChain;
     // A starting baseline for who has hit, so the first hit we see can be put to a name.
     if (!this.report && this.chain && this.chain.current > 0 && now - this.last.report >= 30 * SEC) return this.readReport;
-    const due = this.entries.find(e => e.target && (!this.targets.has(e.target) || now - this.targets.get(e.target).fetchedAt > 30 * SEC));
+    const due = !this.willMode() && this.entries.find(e => e.target && (!this.targets.has(e.target) || now - this.targets.get(e.target).fetchedAt > 30 * SEC));
     if (due && now - this.last.target >= 2 * SEC) return () => this.readTarget(due.target, now);
+    // Who in the queue is in hospital (moving them back), once a minute while a chain runs.
+    if (est.running && !this.willMode() && this.entries.length > 1 && now - this.last.members >= MEMBERS_EVERY) return this.readMembers;
     return null;
   }
 
@@ -313,7 +399,7 @@ class HitQueue {
     for (const [id, n] of Object.entries(hits)) {
       const pid = Number(id);
       if (n <= (before[id] || 0)) continue;
-      const i = this.entries.findIndex(e => e.by === pid);
+      const i = this.willMode() ? -1 : this.entries.findIndex(e => e.by === pid); // Hit at will: the queue is paused
       const e = i >= 0 ? this.entries.splice(i, 1)[0] : null;
       if (e) changed = true;
       this.noteHit(pid, e ? e.name : '', e ? e.target : 0, chainNo || null, e ? (i === 0 ? 'hit' : 'hit (jumped the queue)') : 'hit (not queued)', now, this.lastTimerAt);
@@ -329,11 +415,57 @@ class HitQueue {
       const p = d.profile || {};
       const st = p.status || {};
       this.targets.set(id, { name: p.name || '', level: p.level || 0, state: st.state || '', description: st.description || '', until: (st.until || 0) * SEC, fetchedAt: Date.now() });
+      const seenSt = { id, state: st.state || '', details: st.details || '', name: p.name || '', until: (st.until || 0) * SEC };
+      this.observeTarget(id, seenSt, Date.now());
+      if (this.onStatus) this.onStatus([seenSt]); // dibs clear when they go into hospital (claims.js observe)
     } catch (e) {
       if (e.kind === 'soft') this.targets.set(id, { name: '', missing: true, fetchedAt: Date.now() });
     }
     if (this.targets.size > 500) this.targets.clear();
     this.rev++;
+  }
+
+  // Our members' status (one call for all), to see who in the queue is in hospital.
+  async readMembers(now) {
+    this.last.members = now;
+    try {
+      const d = await this.api.request(`/v2/faction/members?striptags=true&${fresh(now)}`, { soft: [6, 7, 16], priority: 4 });
+      this.hitters = new Map((d.members || []).map(m => [m.id, { state: (m.status || {}).state || '', until: ((m.status || {}).until || 0) * SEC }]));
+    } catch (e) {
+      return;
+    }
+    if (this.bumpHospital(Date.now())) this.save();
+  }
+
+  // Someone queued who is in hospital and won't be out by their turn moves back to the first place
+  // whose turn comes after they're out, or to the end (the user's rule, 2026-11-26). Turns are
+  // worked out with everyone hitting at 1:30 left (BUMP_HIT_AT), whatever the hit speed. Only while
+  // a chain runs (before that, nobody's turn has a time). Returns whether anyone moved.
+  bumpHospital(now = Date.now()) {
+    if (this.willMode()) return false;
+    let changed = false;
+    for (const e of this.entries) {
+      const h = this.hitters.get(e.by);
+      if (e.bumped && !(h && h.state === 'Hospital' && h.until > now)) { delete e.bumped; changed = true; } // out again
+    }
+    if (this.entries.length < 2) return changed;
+    const est = estimate(this.chain, BUMP_HIT_AT, this.refill(), this.entries.length, now);
+    if (!est.running) return changed;
+    for (let i = 0, guard = 0; i < this.entries.length && guard < 200; guard++) {
+      const e = this.entries[i];
+      const h = this.hitters.get(e.by);
+      const out = h && h.state === 'Hospital' && h.until > now ? h.until : 0;
+      if (!out || est.times[i] >= out) { i++; continue; }
+      let k = est.times.findIndex((t, j) => j > i && t >= out);
+      if (k < 0) k = this.entries.length - 1; // not out before anyone's turn: last
+      if (k <= i) { i++; continue; }
+      this.entries.splice(i, 1);
+      this.entries.splice(k, 0, e);
+      e.bumped = { at: now, out };
+      this.log(`Hit queue: ${e.name} moved from #${i + 1} to #${k + 1}, in hospital until ${new Date(out).toISOString().slice(11, 19)} TCT.`);
+      changed = true; // the next person is now at i: look at them too
+    }
+    return changed;
   }
 
   // ---- For the board ----
@@ -352,7 +484,11 @@ class HitQueue {
       paceCount: paces.length,
       chain: this.chain,
       noFaction: this.noFaction,
-      entries: this.entries.map(e => ({ ...e, targetInfo: e.target ? this.targets.get(e.target) || null : null })),
+      // Hit at will: no queue to show (its entries wait, paused, for Queue mode).
+      entries: this.willMode() ? [] : this.entries.map(e => ({ ...e, targetInfo: e.target ? this.targets.get(e.target) || null : null })),
+      mode: this.willMode() ? 'will' : 'queue',
+      modeBy: this.db.data.modeBy || '',
+      paused: this.willMode() ? this.entries.length : 0,
       recent: this.db.data.recent,
       watching: this.watching(now),
     };

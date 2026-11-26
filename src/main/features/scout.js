@@ -27,6 +27,7 @@ const WARS_PER_FACTION = 10;
 // Activity checks, ladder and index share the queue with research's background work (9);
 // pool war reports come last (10). Live features (war, research checks) always go first.
 const PRIORITY = 9;
+const WAR_PER_MINUTE = 4; // scouting's limit while your own faction is at war
 const REPORT_PRIORITY = 10;
 const MIN_INTERVAL = 10 * MIN, MAX_INTERVAL = 3 * HOUR;
 const VIEW_EVERY = 5 * MIN;
@@ -62,6 +63,14 @@ class ScoutFeature extends EventEmitter {
     const n = Number(this.store.get('scout.perMinute')) || (this.local ? 6 : 25);
     return Math.max(2, Math.min(this.local ? 15 : 40, n));
   }
+  // How fast scouting really goes (perMinute still sizes the pool). During your own war at most
+  // WAR_PER_MINUTE (2026-11-26: the key hit Torn's 100-a-minute cap, error 5, while scouting filled
+  // the room the war tools left), so the key keeps headroom for the war board, Torn PDA and other
+  // tools Mentat can't count.
+  pace(now = Date.now()) {
+    const max = this.perMinute();
+    return this.war && this.war.inWar && this.war.inWar(now) ? Math.min(max, WAR_PER_MINUTE) : max;
+  }
   spread() { return Math.max(0, Math.min(4, Math.floor(Number(this.store.get('scout.spread') ?? 1)))); }
   get d() { return this.db.data; }
 
@@ -77,7 +86,7 @@ class ScoutFeature extends EventEmitter {
     if (!this.enabled() || !this.api.hasKey() || this.inFlight) return;
     const own = this.war.state && this.war.state.own;
     if (!own || !own.id) return;
-    if (now - this.lastReq < 60e3 / this.perMinute()) return;
+    if (now - this.lastReq < 60e3 / this.pace(now)) return;
     const L = this.d.ladder;
     const ownWarEnded = (() => { const r = this.war.ranked && this.war.ranked(); return r && r.end && L && r.end > L.at; })();
     if (!L || now - L.at >= LADDER_EVERY || L.ownId !== own.id || L.spread !== this.spread() || ownWarEnded) return this.run(() => this.scanLadder(own, now));

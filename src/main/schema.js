@@ -98,9 +98,9 @@ const SETTABLE = {
   'chatwin.onTop': bool, 'chatwin.minimizeToBubble': bool, 'chatwin.compact': bool, 'chatwin.hideInBrowser': bool,
 };
 // Per-tab layout: alignment and width of each tab's content (Settings → Appearance).
-const TABS = ['overview', 'chain', 'research', 'faction', 'war', 'targets', 'mugger', 'travel', 'market', 'planner', 'casino', 'alerts', 'settings'];
+const TABS = ['overview', 'chain', 'research', 'faction', 'war', 'warboard', 'targets', 'mugger', 'travel', 'market', 'planner', 'casino', 'alerts', 'settings'];
 const TAB_LABELS = {
-  overview: 'Overview', chain: 'Chain', targets: 'Targets', faction: 'My Faction', war: 'War', research: 'Oppo Research',
+  overview: 'Overview', chain: 'Chain', targets: 'Targets', faction: 'My Faction', war: 'War', warboard: 'War board', research: 'Oppo Research',
   mugger: 'Mugger', market: 'Market', travel: 'Travel', planner: 'Planner', casino: 'Casino', alerts: 'Alerts', settings: 'Settings',
   'targets:list': 'Targets', 'targets:abroad': 'Abroad',
   'research:overview': 'Research', 'research:report': 'War report', 'research:scout': 'Scouting',
@@ -110,7 +110,7 @@ const TAB_LABELS = {
 };
 const TAB_LAYOUT_DEFAULTS = {
   overview: { align: 'center', width: 'narrow' }, chain: { align: 'center', width: 'narrow' },
-  research: { align: 'center', width: 'wide' }, faction: { align: 'center', width: 'wide' }, war: { align: 'center', width: 'medium' }, targets: { align: 'center', width: 'narrow' }, mugger: { align: 'center', width: 'full' },
+  research: { align: 'center', width: 'wide' }, faction: { align: 'center', width: 'wide' }, war: { align: 'center', width: 'medium' }, warboard: { align: 'center', width: 'medium' }, targets: { align: 'center', width: 'narrow' }, mugger: { align: 'center', width: 'full' },
   travel: { align: 'center', width: 'full' }, market: { align: 'center', width: 'full' }, planner: { align: 'center', width: 'wide' }, casino: { align: 'center', width: 'wide' },
   alerts: { align: 'center', width: 'medium' }, settings: { align: 'center', width: 'narrow' },
 };

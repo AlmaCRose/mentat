@@ -8,7 +8,9 @@
 // tab in a later version, say) goes back to its default place.
 
 // Default order (the user's choice, 2026-11-18).
-const NAV_PANELS = [['overview', 'Overview'], ['chain', 'Chain'], ['targets', 'Targets'], ['mugger', 'Mugger'], ['faction', 'My Faction'], ['war', 'War'], ['research', 'Oppo Research'], ['market', 'Market'], ['travel', 'Travel'], ['planner', 'Planner'], ['casino', 'Casino'], ['alerts', 'Alerts'], ['settings', 'Settings']];
+const NAV_PANELS = [['overview', 'Overview'], ['chain', 'Chain'], ['targets', 'Targets'], ['mugger', 'Mugger'], ['faction', 'My Faction'], ['war', 'War'], ['warboard', 'War board'], ['research', 'Oppo Research'], ['market', 'Market'], ['travel', 'Travel'], ['planner', 'Planner'], ['casino', 'Casino'], ['alerts', 'Alerts'], ['settings', 'Settings']];
+// The web app leaves out the War board: browsers and Torn PDA run the war board plugin itself.
+if (document.documentElement.classList.contains('web')) NAV_PANELS.splice(NAV_PANELS.findIndex(p => p[0] === 'warboard'), 1);
 // Sub-tabs. `pref` remembers the one last open when they sit under their tab.
 const NAV_SUBS = {
   targets: { pref: 'targets.sub', views: [['list', 'Targets'], ['abroad', 'Abroad']] },

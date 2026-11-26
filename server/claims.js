@@ -10,8 +10,12 @@
 //     a key with faction API access) every 15 s while there are dibs;
 //   - the server's own member checks see that player land in hospital (anyone's hit);
 //   - its owner drops it, or after CLAIM_MS.
+//
+// Queuing applies dibs (the user's rule, 2026-11-26): see followQueue. Those dibs (q: true) don't
+// run out while their queue entry is waiting.
 
 const CLAIM_MS = 15 * 60e3;
+const NEW_STAY_MS = 30e3; // a hospital release time this much later than last seen = hospitalised again
 const MAX_TRACKED = 5000;
 const ATTACKS_EVERY = 15e3;
 const DENIED_RETRY = 6 * 3600e3;
@@ -24,17 +28,18 @@ class Claims {
     this.api = api;
     this.log = log;
     this.byTarget = new Map(); // enemy id -> [{ by, name, at }] in claim order
-    this.seen = new Map(); // enemy id -> last state the server saw ('Okay', 'Hospital'…)
+    this.seen = new Map(); // player id -> { state, until } the server last saw ('Okay', 'Hospital'…)
     this.rev = 0;
     this.last = 0; // last attack log read
     this.busy = false;
     this.attackLog = ''; // '' not tried yet, 'ok', 'denied' (key without faction API access)
     this.deniedAt = 0;
+    this.fromQueue = new Map(); // player id -> { target, entry }: the dib their queue entry gave them
   }
 
   prune(now) {
     for (const [t, list] of this.byTarget) {
-      const keep = list.filter(c => now - c.at < CLAIM_MS);
+      const keep = list.filter(c => c.q || now - c.at < CLAIM_MS);
       if (keep.length === list.length) continue;
       this.rev++;
       if (keep.length) this.byTarget.set(t, keep); else this.byTarget.delete(t);
@@ -44,7 +49,7 @@ class Claims {
   list(now = Date.now()) {
     this.prune(now);
     const claims = {};
-    for (const [t, l] of this.byTarget) claims[t] = l.map(c => ({ by: c.by, name: c.name, at: c.at }));
+    for (const [t, l] of this.byTarget) claims[t] = l.map(c => ({ by: c.by, name: c.name, at: c.at, ...(c.q ? { queued: true } : {}) }));
     // How a dib ends when its owner hits: 'attacks' (attack log) or 'hospital' (no log access).
     return { claims, rev: this.rev, now, expiresAfter: CLAIM_MS, perPlayer: 1, clearOn: this.attackLog === 'denied' ? 'hospital' : 'attacks' };
   }
@@ -74,13 +79,62 @@ class Claims {
     return this.list(now);
   }
 
+  // Queuing applies dibs (the user's rule, 2026-11-26): each person's next hit in the queue (their
+  // first entry with a target, when that player is in the enemy faction) is dibbed for them, by
+  // whoever put them in the queue. As with any dib, that moves a dib they had on someone else
+  // (one each). It lasts while the entry waits and goes when the entry leaves the queue (hit,
+  // left, skipped, removed) or its target changes. A queue dib that ends the usual way (their hit,
+  // the player landing in hospital) or that they drop or move themselves isn't put back for that
+  // same entry and target. Called after every queue change and on the server's tick.
+  followQueue(entries, isEnemy, now = Date.now()) {
+    const want = new Map(); // player id -> { target, name, entry }
+    for (const e of entries || []) {
+      if (e.target && !want.has(e.by) && isEnemy(e.target)) want.set(e.by, { target: e.target, name: e.name, entry: e.id });
+    }
+    let changed = false;
+    for (const [pid, had] of this.fromQueue) {
+      const w = want.get(pid);
+      if (w && w.entry === had.entry && w.target === had.target) continue;
+      this.fromQueue.delete(pid);
+      if ((this.byTarget.get(had.target) || []).some(c => c.by === pid && c.q)) { this.drop(pid, had.target); changed = true; }
+    }
+    for (const [pid, w] of want) {
+      if (this.fromQueue.has(pid)) continue;
+      this.fromQueue.set(pid, { target: w.target, entry: w.entry });
+      this.set(pid, w.name, w.target, true, now);
+      const c = (this.byTarget.get(w.target) || []).find(x => x.by === pid);
+      if (c && !c.q) { c.q = true; this.rev++; }
+      changed = true;
+    }
+    return changed;
+  }
+
+  // Hit at will (the queue switched off): dibs the queue gave become ordinary dibs, running out
+  // 15 minutes from now like any other. Switching the queue back on gives them again.
+  releaseQueue(now = Date.now()) {
+    let changed = false;
+    for (const list of this.byTarget.values()) for (const c of list) if (c.q) { delete c.q; c.at = now; changed = true; }
+    if (this.fromQueue.size) { this.fromQueue.clear(); changed = true; }
+    if (changed) this.rev++;
+    return changed;
+  }
+
   // The server's own enemy member checks (war 'members' events): an enemy who goes into
   // hospital since the last check was hit, so their claims are done.
+  // Every time a player goes into hospital, all dibs on them clear (the user's rule, 2026-11-26):
+  // seen going in since the last check, or a new stay while still in (a release time that moved
+  // later by more than NEW_STAY_MS: hit again after a quick revive or medical out, between checks).
+  // A dib on someone already in hospital (waiting for them to come out) stays until their next stay.
+  // Sources: the enemy faction's members (war.js, every 30 s in a war) and the hit queue's reads
+  // of queued targets (hitqueue.js readTarget).
   observe(members) {
     for (const m of members || []) {
+      if (!m || !m.id || !m.state) continue;
       const prev = this.seen.get(m.id);
-      this.seen.set(m.id, m.state);
-      if (m.state === 'Hospital' && prev && prev !== 'Hospital' && this.byTarget.has(m.id)) {
+      const until = Number(m.until) || 0;
+      this.seen.set(m.id, { state: m.state, until });
+      const newStay = m.state === 'Hospital' && prev && (prev.state !== 'Hospital' || (until && prev.until && until > prev.until + NEW_STAY_MS));
+      if (newStay && this.byTarget.has(m.id)) {
         this.byTarget.delete(m.id);
         this.rev++;
       }

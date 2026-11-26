@@ -229,6 +229,24 @@ class FFScouterFeature extends EventEmitter {
     }
   }
 
+  // The War board tab's FFScouter reads (its stats and target search, the same requests as the war
+  // board plugin), with the key saved here. Answers { status, json } like an HTTP reply, FFScouter's
+  // own errors included, so the board handles them as it does in browsers.
+  async boardCall(path, params) {
+    if (!['get-stats', 'get-targets'].includes(path)) return { status: 400, json: { error: 'Not allowed' } };
+    if (!this.hasKey()) return { status: 400, json: { error: 'Add your FFScouter key in Settings first.', code: 0 } };
+    const p = {};
+    for (const [k, v] of Object.entries(params && typeof params === 'object' ? params : {})) {
+      if (/^(targets|limit|preset|minlevel|maxlevel|minff|maxff|inactiveonly|factionless)$/.test(k)) p[k] = String(v).slice(0, 4000);
+    }
+    try {
+      return { status: 200, json: await call(path, { key: this.getKey(), ...p }) };
+    } catch (e) {
+      if (e.code in KEY_ERRORS) this.handleError(e); // the key is no good: Settings says so
+      return { status: e.code ? 200 : 502, json: { error: e.message, code: e.code ?? null, retry_after_seconds: e.retryAfter ?? null } };
+    }
+  }
+
   // ---- Activity history + stat growth for a faction (Premium) ----
   intel(fid) {
     return (this.intelDb && this.intelDb.get('factions') || {})[fid] || null;

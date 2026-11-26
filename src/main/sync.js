@@ -284,6 +284,32 @@ class SyncFeature extends EventEmitter {
     return res.json();
   }
 
+  // A request whose answer the caller reads whatever its status (the War board tab, which shows the
+  // server's own messages: "not your entry", a 400 for a bad target, …). Never throws for HTTP
+  // errors: { status, json }; status 0 = the server couldn't be reached.
+  async call(method, p, body = null) {
+    if (!this.signedIn()) return { status: 401, json: { error: "Sign in to your faction's Mentat server first: Settings → Data source." } };
+    const headers = { Authorization: `Bearer ${this.secret('token')}`, Accept: 'application/json', 'User-Agent': 'Mentat' };
+    const cfId = this.secret('cfId'), cfSecret = this.secret('cfSecret');
+    if (cfId && cfSecret) { headers['CF-Access-Client-Id'] = cfId; headers['CF-Access-Client-Secret'] = cfSecret; }
+    if (body !== null) headers['Content-Type'] = 'application/json';
+    let res;
+    try {
+      res = await fetch(`${this.url()}/api/v1/${p}`, { method, headers, body: body !== null ? JSON.stringify(body) : undefined, redirect: 'manual', signal: AbortSignal.timeout(20e3) });
+    } catch (e) {
+      return { status: 0, json: { error: e.name === 'TimeoutError' ? 'The Mentat server took too long to answer.' : "Can't reach the Mentat server." } };
+    }
+    let json = null;
+    try { json = await res.json(); } catch (e) { /* not JSON */ }
+    if (res.status === 401 && this.kind() === 'session') {
+      this.setSignedOut((json && json.error) || 'You were signed out.');
+      this.emitState();
+    }
+    if (res.status >= 300 && res.status < 400) return { status: 403, json: { error: 'The server redirected to a login page: check the Cloudflare Access service token.' } };
+    if (res.status === 404 && !(json && json.error)) return { status: 404, json: { error: 'Your Mentat server needs an update for the war board.' } };
+    return { status: res.status, json };
+  }
+
   // ---- Loop ----
   tick(now) {
     if (this.mode() !== 'server' || !this.signedIn() || this.inFlight) return;

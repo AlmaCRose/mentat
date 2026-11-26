@@ -192,6 +192,7 @@ function showPanel(entry) {
   if (name === 'war') renderWar();
   if (name === 'research') renderResearch();
   if (name === 'faction') renderFaction();
+  renderWarboard(); // shown or hidden: the board reads only while it's on show
 }
 
 // ---- Banner + footer ----
@@ -1471,6 +1472,7 @@ function popBadge(id) {
     const ok = ts.filter(t => t.status && t.status.state === 'Okay').length;
     return { text: `${ok} ok`, tone: ok ? 'ok' : '', title: `${ok} of ${ts.length} targets okay` };
   }
+  if (p === 'warboard') return warboardBadge(); // your place in the hit queue, else the chain timer
   if (p === 'war' || p === 'faction') {
     const w = S.features.war;
     const r = w && w.wars && w.wars.ranked;
