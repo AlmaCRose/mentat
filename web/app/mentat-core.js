@@ -1,4 +1,4 @@
-// Mentat 0.1.33: the core for web browsers. Built by scripts/pack-web.js from src/main; don't edit.
+// Mentat 0.1.34: the core for web browsers. Built by scripts/pack-web.js from src/main; don't edit.
 (function () {
 'use strict';
 // Browser stand-ins for the Node and Electron modules Mentat's core uses (bundled into
@@ -513,6 +513,29 @@ function createCore(host) {
     'ffscouter.removeKey': () => ffscouter.removeKey(''),
     'ffscouter.refresh': () => ffscouter.refreshSoon(true),
     'ffscouter.find': params => ffscouter.findTargets(params && typeof params === 'object' ? params : {}),
+    // War board tab (the war board plugin running inside Mentat, the user's request 2026-11-26):
+    // its Mentat server calls with this app's sign-in, its Torn reads through the API queue with the
+    // saved key (counted like everything else), its FFScouter reads with the saved FFScouter key.
+    // Each limited to what the board uses.
+    'warboard.server': (method, p, body) => {
+      method = method === 'POST' ? 'POST' : 'GET';
+      p = String(p || '');
+      if (!/^war\/(board|queue|claims|energy)(\?[A-Za-z0-9_=&.-]*)?$/.test(p)) return { status: 400, json: { error: 'Not allowed' } };
+      return sync.call(method, p, method === 'POST' ? (body && typeof body === 'object' ? body : {}) : null);
+    },
+    'warboard.torn': async p => {
+      p = String(p || '');
+      const ok = /^\/v2\/(faction\/(\d+\/)?members|user\/battlestats|user\/\d+\/basic)(\?[A-Za-z0-9_=&]*)?$/.test(p) || p === '/v2/user?selections=bars,cooldowns';
+      if (!ok) return { error: { code: 0, error: 'Not allowed' } };
+      try {
+        // Priority 7: after the app's own features (chain, your status, war), so the board's Live
+        // can't crowd them out when the key is near its limit.
+        return await api.request(p, { soft: [6, 7, 16], priority: 7 });
+      } catch (e) {
+        return { error: { code: e.code || 0, error: e.message } };
+      }
+    },
+    'warboard.ffs': (p, params) => ffscouter.boardCall(String(p || ''), params),
     'ffscouter.intel': (fid, ids, force) => ffscouter.loadIntel(Number(fid) || 0, Array.isArray(ids) ? ids.slice(0, 120) : [], !!force),
     'war.refresh': () => war.refresh(),
     'war.watch': id => war.watch(id),
@@ -732,9 +755,9 @@ const SETTABLE = {
   'chatwin.onTop': bool, 'chatwin.minimizeToBubble': bool, 'chatwin.compact': bool, 'chatwin.hideInBrowser': bool,
 };
 // Per-tab layout: alignment and width of each tab's content (Settings → Appearance).
-const TABS = ['overview', 'chain', 'research', 'faction', 'war', 'targets', 'mugger', 'travel', 'market', 'planner', 'casino', 'alerts', 'settings'];
+const TABS = ['overview', 'chain', 'research', 'faction', 'war', 'warboard', 'targets', 'mugger', 'travel', 'market', 'planner', 'casino', 'alerts', 'settings'];
 const TAB_LABELS = {
-  overview: 'Overview', chain: 'Chain', targets: 'Targets', faction: 'My Faction', war: 'War', research: 'Oppo Research',
+  overview: 'Overview', chain: 'Chain', targets: 'Targets', faction: 'My Faction', war: 'War', warboard: 'War board', research: 'Oppo Research',
   mugger: 'Mugger', market: 'Market', travel: 'Travel', planner: 'Planner', casino: 'Casino', alerts: 'Alerts', settings: 'Settings',
   'targets:list': 'Targets', 'targets:abroad': 'Abroad',
   'research:overview': 'Research', 'research:report': 'War report', 'research:scout': 'Scouting',
@@ -744,7 +767,7 @@ const TAB_LABELS = {
 };
 const TAB_LAYOUT_DEFAULTS = {
   overview: { align: 'center', width: 'narrow' }, chain: { align: 'center', width: 'narrow' },
-  research: { align: 'center', width: 'wide' }, faction: { align: 'center', width: 'wide' }, war: { align: 'center', width: 'medium' }, targets: { align: 'center', width: 'narrow' }, mugger: { align: 'center', width: 'full' },
+  research: { align: 'center', width: 'wide' }, faction: { align: 'center', width: 'wide' }, war: { align: 'center', width: 'medium' }, warboard: { align: 'center', width: 'medium' }, targets: { align: 'center', width: 'narrow' }, mugger: { align: 'center', width: 'full' },
   travel: { align: 'center', width: 'full' }, market: { align: 'center', width: 'full' }, planner: { align: 'center', width: 'wide' }, casino: { align: 'center', width: 'wide' },
   alerts: { align: 'center', width: 'medium' }, settings: { align: 'center', width: 'narrow' },
 };
@@ -2097,6 +2120,32 @@ class SyncFeature extends EventEmitter {
     const type = res.headers.get('content-type') || '';
     if (!type.includes('json')) throw new Error('That address isn\'t a Mentat sync server (it answered with a web page)');
     return res.json();
+  }
+
+  // A request whose answer the caller reads whatever its status (the War board tab, which shows the
+  // server's own messages: "not your entry", a 400 for a bad target, …). Never throws for HTTP
+  // errors: { status, json }; status 0 = the server couldn't be reached.
+  async call(method, p, body = null) {
+    if (!this.signedIn()) return { status: 401, json: { error: "Sign in to your faction's Mentat server first: Settings → Data source." } };
+    const headers = { Authorization: `Bearer ${this.secret('token')}`, Accept: 'application/json', 'User-Agent': 'Mentat' };
+    const cfId = this.secret('cfId'), cfSecret = this.secret('cfSecret');
+    if (cfId && cfSecret) { headers['CF-Access-Client-Id'] = cfId; headers['CF-Access-Client-Secret'] = cfSecret; }
+    if (body !== null) headers['Content-Type'] = 'application/json';
+    let res;
+    try {
+      res = await fetch(`${this.url()}/api/v1/${p}`, { method, headers, body: body !== null ? JSON.stringify(body) : undefined, redirect: 'manual', signal: AbortSignal.timeout(20e3) });
+    } catch (e) {
+      return { status: 0, json: { error: e.name === 'TimeoutError' ? 'The Mentat server took too long to answer.' : "Can't reach the Mentat server." } };
+    }
+    let json = null;
+    try { json = await res.json(); } catch (e) { /* not JSON */ }
+    if (res.status === 401 && this.kind() === 'session') {
+      this.setSignedOut((json && json.error) || 'You were signed out.');
+      this.emitState();
+    }
+    if (res.status >= 300 && res.status < 400) return { status: 403, json: { error: 'The server redirected to a login page: check the Cloudflare Access service token.' } };
+    if (res.status === 404 && !(json && json.error)) return { status: 404, json: { error: 'Your Mentat server needs an update for the war board.' } };
+    return { status: res.status, json };
   }
 
   // ---- Loop ----
@@ -3752,6 +3801,24 @@ class FFScouterFeature extends EventEmitter {
       this.finder.fetchedAt = Date.now();
       this.finder.params = { ...p };
       this.emit('state');
+    }
+  }
+
+  // The War board tab's FFScouter reads (its stats and target search, the same requests as the war
+  // board plugin), with the key saved here. Answers { status, json } like an HTTP reply, FFScouter's
+  // own errors included, so the board handles them as it does in browsers.
+  async boardCall(path, params) {
+    if (!['get-stats', 'get-targets'].includes(path)) return { status: 400, json: { error: 'Not allowed' } };
+    if (!this.hasKey()) return { status: 400, json: { error: 'Add your FFScouter key in Settings first.', code: 0 } };
+    const p = {};
+    for (const [k, v] of Object.entries(params && typeof params === 'object' ? params : {})) {
+      if (/^(targets|limit|preset|minlevel|maxlevel|minff|maxff|inactiveonly|factionless)$/.test(k)) p[k] = String(v).slice(0, 4000);
+    }
+    try {
+      return { status: 200, json: await call(path, { key: this.getKey(), ...p }) };
+    } catch (e) {
+      if (e.code in KEY_ERRORS) this.handleError(e); // the key is no good: Settings says so
+      return { status: e.code ? 200 : 502, json: { error: e.message, code: e.code ?? null, retry_after_seconds: e.retryAfter ?? null } };
     }
   }
 
@@ -6238,6 +6305,7 @@ const WARS_PER_FACTION = 10;
 // Activity checks, ladder and index share the queue with research's background work (9);
 // pool war reports come last (10). Live features (war, research checks) always go first.
 const PRIORITY = 9;
+const WAR_PER_MINUTE = 4; // scouting's limit while your own faction is at war
 const REPORT_PRIORITY = 10;
 const MIN_INTERVAL = 10 * MIN, MAX_INTERVAL = 3 * HOUR;
 const VIEW_EVERY = 5 * MIN;
@@ -6273,6 +6341,14 @@ class ScoutFeature extends EventEmitter {
     const n = Number(this.store.get('scout.perMinute')) || (this.local ? 6 : 25);
     return Math.max(2, Math.min(this.local ? 15 : 40, n));
   }
+  // How fast scouting really goes (perMinute still sizes the pool). During your own war at most
+  // WAR_PER_MINUTE (2026-11-26: the key hit Torn's 100-a-minute cap, error 5, while scouting filled
+  // the room the war tools left), so the key keeps headroom for the war board, Torn PDA and other
+  // tools Mentat can't count.
+  pace(now = Date.now()) {
+    const max = this.perMinute();
+    return this.war && this.war.inWar && this.war.inWar(now) ? Math.min(max, WAR_PER_MINUTE) : max;
+  }
   spread() { return Math.max(0, Math.min(4, Math.floor(Number(this.store.get('scout.spread') ?? 1)))); }
   get d() { return this.db.data; }
 
@@ -6288,7 +6364,7 @@ class ScoutFeature extends EventEmitter {
     if (!this.enabled() || !this.api.hasKey() || this.inFlight) return;
     const own = this.war.state && this.war.state.own;
     if (!own || !own.id) return;
-    if (now - this.lastReq < 60e3 / this.perMinute()) return;
+    if (now - this.lastReq < 60e3 / this.pace(now)) return;
     const L = this.d.ladder;
     const ownWarEnded = (() => { const r = this.war.ranked && this.war.ranked(); return r && r.end && L && r.end > L.at; })();
     if (!L || now - L.at >= LADDER_EVERY || L.ownId !== own.id || L.spread !== this.spread() || ownWarEnded) return this.run(() => this.scanLadder(own, now));
@@ -8169,5 +8245,5 @@ function load(id) {
   DEFS[id].call(module.exports, module, module.exports, req);
   return module.exports;
 }
-window.Mentat = { version: "0.1.33", load: SHIMS.load, persistNow: SHIMS.persistNow, require: load, Buffer };
+window.Mentat = { version: "0.1.34", load: SHIMS.load, persistNow: SHIMS.persistNow, require: load, Buffer };
 })();
